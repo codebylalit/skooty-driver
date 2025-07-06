@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Driver Document Verification Admin Panel</title>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-storage-compat.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; background: #faf6f3; color: #582b11; margin: 0; padding: 0; }
+    .container { max-width: 900px; margin: 32px auto; background: #fff; border-radius: 16px; box-shadow: 0 2px 12px #0001; padding: 32px; }
+    h1 { text-align: center; color: #cc5803; }
+    .driver-card { border: 1px solid #eee; border-radius: 12px; margin-bottom: 32px; padding: 24px; background: #faf6f3; }
+    .doc-list { display: flex; gap: 24px; margin-bottom: 16px; flex-wrap: wrap; }
+    .doc-list div { text-align: center; }
+    .doc-list img { width: 180px; height: 120px; object-fit: cover; border-radius: 8px; border: 1px solid #ccc; background: #fff; }
+    .actions { display: flex; gap: 16px; }
+    button { padding: 10px 24px; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; }
+    .approve { background: #34c759; color: #fff; }
+    .reject { background: #e53935; color: #fff; }
+    .status { font-weight: bold; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <div id="main"></div>
+  <script>
+    // TODO: Replace with your Firebase config
+const firebaseConfig = {
+  apiKey: "AIzaSyA8sIenzk6VovyK7hlj8Z30U71IMS95P7Q",
+  authDomain: "skooty07.firebaseapp.com",
+  projectId: "skooty07",
+  storageBucket: "skooty07.firebasestorage.app",
+  messagingSenderId: "342721275713",
+  appId: "1:342721275713:web:c08c1f7704edbb6ca963c0",
+  measurementId: "G-HFR06FGVPY"
+};
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+
+    function renderDrivers(drivers) {
+      const container = document.createElement('div');
+      container.className = 'container';
+      container.innerHTML = `
+        <h1>Driver Document Verification</h1>
+        <div id="drivers"></div>
+      `;
+      document.getElementById('main').innerHTML = '';
+      document.getElementById('main').appendChild(container);
+      const driversDiv = document.getElementById('drivers');
+      if (drivers.length === 0) {
+        driversDiv.innerHTML = '<p>No pending verifications.</p>';
+        return;
+      }
+      drivers.forEach(driver => {
+        const docs = driver.documents || {};
+        const card = document.createElement('div');
+        card.className = 'driver-card';
+        card.innerHTML = `
+          <div class="status">Status: <span style="color: #cc5803">${driver.verificationStatus}</span></div>
+          <div><b>Name:</b> ${driver.name || ''} <b>Mobile:</b> ${driver.mobile || ''}</div>
+          <div class="doc-list">
+            <div><div>License Front</div>${docs.licenseFrontUrl ? `<img src="${docs.licenseFrontUrl}" alt="License Front">` : 'N/A'}</div>
+            <div><div>License Back</div>${docs.licenseBackUrl ? `<img src="${docs.licenseBackUrl}" alt="License Back">` : 'N/A'}</div>
+            <div><div>RC</div>${docs.rcUrl ? `<img src="${docs.rcUrl}" alt="RC">` : 'N/A'}</div>
+            <div><div>Aadhaar</div>${docs.aadhaarUrl ? `<img src="${docs.aadhaarUrl}" alt="Aadhaar">` : 'N/A'}</div>
+          </div>
+          <div class="actions">
+            <button class="approve">Approve</button>
+            <button class="reject">Reject</button>
+          </div>
+        `;
+        // Approve
+        card.querySelector('.approve').onclick = async () => {
+          await db.collection('drivers').doc(driver.id).update({ verificationStatus: 'verified' });
+          card.querySelector('.status span').textContent = 'verified';
+          card.style.opacity = 0.5;
+        };
+        // Reject
+        card.querySelector('.reject').onclick = async () => {
+          await db.collection('drivers').doc(driver.id).update({ verificationStatus: 'rejected' });
+          card.querySelector('.status span').textContent = 'rejected';
+          card.style.opacity = 0.5;
+        };
+        driversDiv.appendChild(card);
+      });
+    }
+
+    // Fetch all drivers with pending verification
+    let unsubscribeDrivers = null;
+    function fetchPendingDrivers() {
+      if (unsubscribeDrivers) unsubscribeDrivers();
+      unsubscribeDrivers = db.collection('drivers').where('verificationStatus', '==', 'pending')
+        .onSnapshot(snapshot => {
+          const drivers = [];
+          snapshot.forEach(doc => {
+            drivers.push({ id: doc.id, ...doc.data() });
+          });
+          renderDrivers(drivers);
+        });
+    }
+    fetchPendingDrivers();
+  </script>
+</body>
+</html> 

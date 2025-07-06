@@ -1,0 +1,36 @@
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /rides/{rideId} {
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow read: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        (resource.data.status == 'booked' && resource.data.driverId == null) ||
+        (resource.data.status == 'pending' && resource.data.driverId == null) ||
+        (resource.data.driverId == request.auth.uid)
+      );
+      allow update: if request.auth != null && (
+        // Allow customer to update their own rides
+        resource.data.userId == request.auth.uid ||
+        // Allow driver to accept rides (when driverId is null and status is booked)
+        (resource.data.status == 'booked' && 
+         resource.data.driverId == null && 
+         request.resource.data.driverId == request.auth.uid &&
+         request.resource.data.status == 'Driver on the way') ||
+        // Allow driver to accept rides (when driverId is null and status is pending)
+        (resource.data.status == 'pending' && 
+         resource.data.driverId == null && 
+         request.resource.data.driverId == request.auth.uid &&
+         request.resource.data.status == 'Driver on the way') ||
+        // Allow driver to update rides they're assigned to through the complete status flow
+        (resource.data.driverId == request.auth.uid && 
+         request.resource.data.driverId == request.auth.uid &&
+         request.resource.data.status in ['Driver on the way', 'Arrived at pickup', 'Ride in progress', 'Completed', 'cancelled'])
+      );
+      allow delete: if false;
+    }
+    match /drivers/{userId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+} 

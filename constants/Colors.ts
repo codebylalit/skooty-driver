@@ -8,19 +8,29 @@ const tintColorDark = '#fff';
 
 export const Colors = {
   light: {
-    text: '#11181C',
-    background: '#fff',
-    tint: tintColorLight,
-    icon: '#687076',
-    tabIconDefault: '#687076',
-    tabIconSelected: tintColorLight,
+    background: '#E7D7C9', // New background
+    primary: '#CC5803',     // Action color
+    secondary: '#582b11',   // Text, headings, nav
+    surface: '#FAF6F3',     // Cards
+    accent: '#CC5803',      // Use primary as accent for minimalism
+    card: '#FFFFFF',        // Use surface for cards
+    text: '#582b11',        // Secondary for text
+    tint: '#CC5803',        // Primary for tint
+    icon: '#CC5803',        // Primary for icons
+    tabIconDefault: '#582b11',
+    tabIconSelected: '#CC5803',
   },
   dark: {
-    text: '#ECEDEE',
-    background: '#151718',
-    tint: tintColorDark,
-    icon: '#9BA1A6',
-    tabIconDefault: '#9BA1A6',
-    tabIconSelected: tintColorDark,
+    background: '#582b11', // Secondary as dark background
+    primary: '#CC5803',    // Action color
+    secondary: '#E7D7C9',  // Light text
+    surface: '#222',       // Dark card
+    accent: '#CC5803',     // Primary as accent
+    card: '#222',
+    text: '#E7D7C9',       // Light text
+    tint: '#CC5803',
+    icon: '#CC5803',
+    tabIconDefault: '#E7D7C9',
+    tabIconSelected: '#CC5803',
   },
 };

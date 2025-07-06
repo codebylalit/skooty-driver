@@ -1,35 +1,200 @@
+import { createDrawerNavigator, DrawerContentComponentProps, DrawerContentScrollView, DrawerItem, DrawerItemList, DrawerNavigationProp } from '@react-navigation/drawer';
+import { NavigationContainer, useNavigation } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
-import React from 'react';
-import { View } from 'react-native';
-import DriverHistoryScreen from './driver/DriverHistoryScreen';
-import DriverHomeScreen from './driver/DriverHomeScreen';
-import DriverLoginScreen from './driver/DriverLoginScreen';
-import DriverRegisterScreen from './driver/DriverRegisterScreen';
-import DriverRideStatusScreen from './driver/DriverRideStatusScreen';
-const Stack = createStackNavigator();
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { doc, onSnapshot } from 'firebase/firestore';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, Image, Text, TouchableOpacity, View } from 'react-native';
+import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import DriverHomeScreen from './app/driver/DriverHomeScreen';
+import DriverRideStatusScreen from './app/driver/DriverRideStatusScreen';
+import DriverVerificationScreen from './app/driver/DriverVerificationScreen';
+import WelcomeScreen from './app/driver/WelcomeScreen';
+import { Colors } from './constants/Colors';
+import { auth, db } from './firebaseConfig';
 
-export default function DriverApp() {
+const Stack = createStackNavigator();
+const Drawer = createDrawerNavigator();
+
+function CustomDrawerContent(props: DrawerContentComponentProps & { profile?: { profilePhotoUrl?: string; name?: string } }) {
+  const profile = props?.profile || {};
   return (
-    <View style={{ flex: 1 }}>
-      <Stack.Navigator initialRouteName="DriverLogin">
-        <Stack.Screen
-          name="DriverLogin"
-          component={DriverLoginScreen}
-        />
-        <Stack.Screen
-          name="DriverRegister"
-          component={DriverRegisterScreen}
-        />
-        <Stack.Screen
-          name="DriverHome"
-          component={DriverHomeScreen}
-        />
-        <Stack.Screen
-          name="DriverRideStatus"
-          component={DriverRideStatusScreen}
-        />
-        <Stack.Screen name="DriverHistory" component={DriverHistoryScreen} />
-      </Stack.Navigator>
+    <DrawerContentScrollView {...props} style={{ backgroundColor: Colors.light.surface, paddingTop: 32, flex: 1 }} contentContainerStyle={{ flexGrow: 1 }}>
+      <View style={{ flex: 1, minHeight: '100%' }}>
+        {/* App Logo Placeholder */}
+        <View style={{ alignItems: 'center', marginTop: 0, marginBottom: 16 }}>
+          {profile.profilePhotoUrl ? (
+            <Image source={{ uri: profile.profilePhotoUrl }} style={{ width: 48, height: 48, borderRadius: 24, marginBottom: 4, borderWidth: 2, borderColor: Colors.light.primary }} />
+          ) : (
+            <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: Colors.light.background, alignItems: 'center', justifyContent: 'center', marginBottom: 4 }}>
+              <Image source={require('./assets/images/icon.png')} style={{ width: 32, height: 32, borderRadius: 16, opacity: 0.3 }} />
+            </View>
+          )}
+          <Text style={{ fontWeight: '700', color: Colors.light.secondary, fontSize: 18, fontFamily: 'Inter', marginBottom: 2 }}>{profile.name || 'Driver'}</Text>
+        </View>
+        <View style={{ marginHorizontal: 8, marginBottom: 8 }}>
+          <DrawerItemList {...props} />
+        </View>
+        <View style={{ flex: 1 }} /> {/* Spacer to push logout to bottom */}
+        <View style={{ marginHorizontal: 8, marginTop: 12, marginBottom: 62, }}>
+          <DrawerItem
+            label="Logout"
+            labelStyle={{ color: Colors.dark.secondary, fontWeight: 'bold', fontFamily: 'Inter', fontSize: 16 }}
+            style={{ borderRadius: 12, backgroundColor: Colors.dark.primary, marginTop: 8 }}
+            onPress={async () => {
+              await signOut(auth);
+            }}
+          />
+        </View>
+      </View>
+    </DrawerContentScrollView>
+  );
+}
+
+function DrawerMenuHeader({ tintColor }: { tintColor?: string }) {
+  const navigation = useNavigation<DrawerNavigationProp<any>>();
+  return (
+    <TouchableOpacity
+      style={{
+        backgroundColor: Colors.light.surface,
+        borderRadius: 10,
+        padding: 10,
+        elevation: 2,
+        marginLeft: 20,
+        shadowColor: Colors.light.primary,
+        shadowOpacity: 0.10,
+        shadowRadius: 4,
+      }}
+      onPress={() => navigation.openDrawer()}
+      activeOpacity={0.7}
+    >
+      <MaterialCommunityIcons name="menu" size={28} color={tintColor || Colors.light.primary} />
+    </TouchableOpacity>
+  );
+}
+
+function ProfileHeaderRight({ profile }: { profile?: { profilePhotoUrl?: string; name?: string } }) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 18 }}>
+      <Text
+        style={{
+          color: Colors.light.secondary,
+          fontWeight: '600',
+          fontSize: 17,
+          marginRight: 10,
+          fontFamily: 'Inter',
+          letterSpacing: 0.2,
+        }}
+        numberOfLines={1}
+        ellipsizeMode="tail"
+      >
+        {profile?.name ? `Hi, ${profile.name}` : ''}
+      </Text>
+      {profile?.profilePhotoUrl ? (
+        <TouchableOpacity onPress={() => {/* TODO: handle profile press */}}>
+          <Image
+            source={{ uri: profile.profilePhotoUrl }}
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: 19,
+              borderWidth: 2,
+              borderColor: Colors.light.primary,
+              backgroundColor: Colors.light.surface,
+              shadowColor: Colors.light.primary,
+              shadowOpacity: 0.12,
+              shadowRadius: 4,
+            }}
+          />
+        </TouchableOpacity>
+      ) : (
+        <MaterialCommunityIcons name="account" size={24} color={Colors.light.secondary} />
+      )}
     </View>
+  );
+}
+
+function DriverDrawer() {
+  const [profile, setProfile] = React.useState<{ profilePhotoUrl?: string; name?: string } | null>(null);
+
+  React.useEffect(() => {
+    let unsubscribeAuth: any;
+    let unsubscribeProfile: any;
+    async function fetchProfile(user: any) {
+      if (!user) {
+        setProfile(null);
+        return;
+      }
+      const docRef = doc(db, 'drivers', user.uid);
+      unsubscribeProfile = onSnapshot(docRef, (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          setProfile({ name: data.name, profilePhotoUrl: data.profilePhotoUrl });
+        } else {
+          setProfile(null);
+        }
+      });
+    }
+    unsubscribeAuth = onAuthStateChanged(auth, fetchProfile);
+    return () => {
+      if (unsubscribeAuth) unsubscribeAuth();
+      if (unsubscribeProfile) unsubscribeProfile();
+    };
+  }, []);
+
+  return (
+    <Drawer.Navigator
+      initialRouteName="DriverHome"
+      drawerContent={props => <CustomDrawerContent {...props} profile={profile || undefined} />}
+      screenOptions={{
+        headerShown: true,
+        headerStyle: { backgroundColor: Colors.light.surface, elevation: 0, shadowOpacity: 0 },
+        headerTitle: () => null, // Remove the title
+        headerTintColor: Colors.light.primary,
+        drawerActiveTintColor: Colors.light.primary,
+        drawerInactiveTintColor: Colors.light.secondary + '99',
+        drawerStyle: { backgroundColor: Colors.light.surface, borderTopRightRadius: 24, borderBottomRightRadius: 24 },
+        drawerLabelStyle: { fontWeight: 'bold', fontSize: 16, fontFamily: 'Inter' },
+        headerLeft: ({ tintColor }) => <DrawerMenuHeader tintColor={tintColor} />, // Only menu icon
+        headerRight: () => <ProfileHeaderRight profile={profile || undefined} />,   // Profile image and username on right
+      }}
+    >
+      <Drawer.Screen name="DriverHome" component={DriverHomeScreen} options={{ title: 'Home' }} />
+      <Drawer.Screen name="Profile" component={DriverHomeScreen} options={{ title: 'Profile' }} initialParams={{ showProfile: true }} />
+      <Drawer.Screen name="DriverVerification" component={DriverVerificationScreen} options={{ title: 'Account Verification' }} />
+    </Drawer.Navigator>
+  );
+}
+
+export default function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState<null | boolean>(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setIsAuthenticated(!!user);
+    });
+    return unsubscribe;
+  }, []);
+
+  if (isAuthenticated === null) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.light.background }}>
+        <ActivityIndicator size="large" color={Colors.light.primary} />
+      </View>
+    );
+  }
+
+  return (
+    <NavigationContainer>
+      <Stack.Navigator initialRouteName={isAuthenticated ? 'DriverDrawer' : 'Welcome'} screenOptions={{ headerShown: false }}>
+        {!isAuthenticated && (
+          <Stack.Screen name="Welcome" component={WelcomeScreen} />
+        )}
+        {isAuthenticated && (
+          <Stack.Screen name="DriverDrawer" component={DriverDrawer} />
+        )}
+        <Stack.Screen name="DriverRideStatus" component={DriverRideStatusScreen as any} />
+      </Stack.Navigator>
+    </NavigationContainer>
   );
 } 

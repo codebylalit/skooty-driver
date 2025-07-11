@@ -1,5 +1,5 @@
 // @ts-ignore
-import { auth as rawAuth, db as rawDb, storage as rawStorage } from '../../firebaseConfig';
+import { getFirebaseAuth, db as rawDb, storage as rawStorage } from '../../firebaseConfig';
 // @ts-ignore
 import * as ImagePicker from 'expo-image-picker';
 // @ts-ignore
@@ -13,22 +13,21 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
-  Image,
   Keyboard,
-  SafeAreaView,
-  ScrollView,
+  Pressable,
   Text,
-  TextInput,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 import Toast from 'react-native-root-toast';
 // @ts-ignore
+import * as Notifications from 'expo-notifications';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import { getCommissionSummary } from '../../commissionUtils';
 import { Colors } from '../../constants/Colors';
 
 // @ts-ignore
-const auth = rawAuth;
+const auth = getFirebaseAuth();
 // @ts-ignore
 const db = rawDb;
 // @ts-ignore
@@ -97,7 +96,40 @@ async function getAddressFromCoords(coords: { latitude: number; longitude: numbe
   return `${coords.latitude.toFixed(5)}, ${coords.longitude.toFixed(5)}`;
 }
 
+function useRegisterPushToken() {
+  React.useEffect(() => {
+    let savedToken = '';
+    async function registerForPushNotificationsAsync() {
+      let token;
+      if (Device.isDevice) {
+        const { status: existingStatus } = await Notifications.getPermissionsAsync();
+        let finalStatus = existingStatus;
+        if (existingStatus !== 'granted') {
+          const { status } = await Notifications.requestPermissionsAsync();
+          finalStatus = status;
+        }
+        if (finalStatus !== 'granted') {
+          return;
+        }
+        token = (await Notifications.getExpoPushTokenAsync()).data;
+        // Save token to Firestore if changed
+        const user = auth.currentUser;
+        if (user && token && token !== savedToken) {
+          try {
+            await updateDoc(doc(db, 'drivers', user.uid), { expoPushToken: token });
+            savedToken = token;
+          } catch (e) {
+            // ignore
+          }
+        }
+      }
+    }
+    registerForPushNotificationsAsync();
+  }, []);
+}
+
 export default function DriverHomeScreen({ navigation: propNavigation, route }: { navigation: any, route: any }) {
+  // useRegisterPushToken();
   const navigation = useNavigation();
   const [rides, setRides] = useState<Ride[]>([]);
   const [loading, setLoading] = useState(true);
@@ -123,7 +155,13 @@ export default function DriverHomeScreen({ navigation: propNavigation, route }: 
   const [acceptingRide, setAcceptingRide] = useState<string | null>(null);
   const [checkingActiveRide, setCheckingActiveRide] = useState(true);
   const [currentTab, setCurrentTab] = useState<'home' | 'profile'>('home');
-
+  const [pendingCommission, setPendingCommission] = useState(0);
+  const [commissionLoading, setCommissionLoading] = useState(true);
+  const [totalEarnings, setTotalEarnings] = useState(0);
+  const [platformFeeDue, setPlatformFeeDue] = useState(0);
+  const [totalPlatformPaid, setTotalPlatformPaid] = useState(0);
+  // Move useRef here (top-level, only once)
+  const prevRideIdsRef = React.useRef<Set<string>>(new Set());
 
 
   // Function to check for active rides
@@ -284,6 +322,29 @@ export default function DriverHomeScreen({ navigation: propNavigation, route }: 
     };
   }, []);
 
+  // Real-time listener for completed rides (history)
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined;
+    const user = auth.currentUser;
+    if (user) {
+      const q = query(
+        collection(db, 'rides'),
+        where('driverId', '==', user.uid),
+        where('status', '==', 'Completed')
+      );
+      unsubscribe = onSnapshot(q, (querySnapshot) => {
+        const completedRides = querySnapshot.docs.map(doc => {
+          const data = doc.data();
+          return { id: doc.id, ...data } as Ride;
+        });
+        setHistory(completedRides);
+      });
+    }
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [auth.currentUser]);
+
   // Manual profile refresh function
   const refreshProfile = async () => {
     console.log('Manual profile refresh triggered');
@@ -381,7 +442,7 @@ export default function DriverHomeScreen({ navigation: propNavigation, route }: 
         return;
       }
 
-      // Check if driver already has an active ride
+      //     // Check if driver already has an active ride
       (async () => {
         const user = auth.currentUser;
         if (user) {
@@ -402,9 +463,9 @@ export default function DriverHomeScreen({ navigation: propNavigation, route }: 
           }
         }
 
-        // Continue with normal ride fetching if no active ride
-        // Update query to include both 'booked' and 'pending' status rides
-        // AND filter by vehicle type
+        //       // Continue with normal ride fetching if no active ride
+        //       // Update query to include both 'booked' and 'pending' status rides
+        //       // AND filter by vehicle type
         const q = query(
           collection(db, 'rides'),
           where('status', 'in', ['booked', 'pending']),
@@ -414,14 +475,60 @@ export default function DriverHomeScreen({ navigation: propNavigation, route }: 
 
         console.log('Query set up for vehicle type:', profile?.vehicleType);
 
-        unsubscribe = onSnapshot(q, (querySnapshot) => {
+        unsubscribe = onSnapshot(q, async (querySnapshot) => {
           let data = querySnapshot.docs.map(doc => ({ ...(doc.data() as Ride), id: doc.id }));
           console.log('Available rides found:', data.length);
           data.forEach(ride => {
             console.log('Ride:', { id: ride.id, status: ride.status, driverId: ride.driverId, fare: ride.fare, vehicleType: ride.vehicleType });
           });
 
-          // Filter by proximity if location is available (increased radius to 10km)
+          //         // --- AUTO-REJECT LOGIC START ---
+          const now = Date.now();
+          const TWO_MINUTES = 2 * 60 * 1000;
+          await Promise.all(
+            data.map(async (ride) => {
+              if (
+                (ride.status === 'booked' || ride.status === 'pending') &&
+                !ride.driverId &&
+                ride.createdAt &&
+                ((ride.createdAt.toDate ? ride.createdAt.toDate().getTime() : new Date(ride.createdAt).getTime()) < now - TWO_MINUTES)
+              ) {
+                try {
+                  await updateDoc(doc(db, 'rides', ride.id), {
+                    status: 'rejected',
+                    rejectedAt: new Date(),
+                    rejectedReason: 'Auto-rejected: not accepted within 2 minutes',
+                  });
+                } catch (e) {
+                  // Optionally log error
+                  console.error('Auto-reject failed for ride', ride.id, e);
+                }
+              }
+            })
+          );
+          //         // --- AUTO-REJECT LOGIC END ---
+
+          //         // --- NEW RIDE NOTIFICATION LOGIC START ---
+          const prevRideIds = prevRideIdsRef.current;
+          const currentRideIds = new Set(data.map(ride => ride.id));
+          let newRideDetected = false;
+          for (const id of currentRideIds) {
+            if (!prevRideIds.has(id)) {
+              newRideDetected = true;
+              break;
+            }
+          }
+          if (newRideDetected && prevRideIds.size > 0) {
+            Toast.show('New ride request received!', {
+              duration: Toast.durations.SHORT,
+              backgroundColor: Colors.light.primary,
+              textColor: Colors.light.background,
+            });
+          }
+          prevRideIdsRef.current = currentRideIds;
+          //         // --- NEW RIDE NOTIFICATION LOGIC END ---
+
+          //         // Filter by proximity if location is available (increased radius to 10km)
           if (location) {
             const beforeFilter = data.length;
             data = data.filter((ride: Ride) => {
@@ -458,39 +565,8 @@ export default function DriverHomeScreen({ navigation: propNavigation, route }: 
       })();
     } else if (view === 'history') {
       setHistoryLoading(true);
-      (async () => {
-        try {
-          const user = auth.currentUser;
-          if (!user) {
-            console.log('No user found for history');
-            return;
-          }
-
-          console.log('Fetching history for user:', user.uid);
-
-          // FIXED: Query for completed rides that this driver has completed
-          const q = query(
-            collection(db, 'rides'),
-            where('driverId', '==', user.uid),
-            where('status', '==', 'Completed')
-          );
-
-          const querySnapshot = await getDocs(q);
-          console.log('Completed rides found:', querySnapshot.docs.length);
-
-          const completedRides = querySnapshot.docs.map(doc => {
-            const data = doc.data();
-            console.log('Completed ride data:', { id: doc.id, status: data.status, driverId: data.driverId, fare: data.fare });
-            return { id: doc.id, ...data } as Ride;
-          });
-
-          setHistory(completedRides);
-        } catch (error) {
-          console.error('Error fetching history:', error);
-        } finally {
-          setHistoryLoading(false);
-        }
-      })();
+      // (Removed one-time fetch for completed rides, now handled by real-time listener)
+      setHistoryLoading(false);
     } else if (view === 'all') {
       setAllRidesLoading(true);
       (async () => {
@@ -527,7 +603,7 @@ export default function DriverHomeScreen({ navigation: propNavigation, route }: 
     };
   }, [view, location, profile?.vehicleType]); // Added profile.vehicleType dependency
 
-  // Fetch addresses for available rides
+  // // Fetch addresses for available rides
   useEffect(() => {
     if (view !== 'available' || !rides.length) return;
     let cancelled = false;
@@ -550,7 +626,7 @@ export default function DriverHomeScreen({ navigation: propNavigation, route }: 
     return () => { cancelled = true; };
   }, [rides, view]);
 
-  // Fetch addresses for completed rides
+  // // Fetch addresses for completed rides
   useEffect(() => {
     if (view !== 'history' || !history.length) return;
     let cancelled = false;
@@ -715,7 +791,7 @@ export default function DriverHomeScreen({ navigation: propNavigation, route }: 
 
       console.log('Final profile photo URL:', profilePhotoUrl);
 
-      // Save to Firestore
+      //     // Save to Firestore
       if (profile && isValidProfile(profile)) {
         console.log('Updating existing profile...');
         const updateData = {
@@ -819,7 +895,7 @@ export default function DriverHomeScreen({ navigation: propNavigation, route }: 
       console.log('User authenticated:', user.uid);
       console.log('Updating ride document:', rideId);
 
-      // First, let's check if the ride exists and is available
+      //     // First, let's check if the ride exists and is available
       const rideDoc = await getDoc(doc(db, 'rides', rideId));
       if (!rideDoc.exists()) {
         console.log('Ride document does not exist');
@@ -842,7 +918,7 @@ export default function DriverHomeScreen({ navigation: propNavigation, route }: 
         return;
       }
 
-      // Update the ride
+      //     // Update the ride
       await updateDoc(doc(db, 'rides', rideId), {
         driverId: user.uid,
         status: 'Driver on the way',
@@ -928,234 +1004,73 @@ export default function DriverHomeScreen({ navigation: propNavigation, route }: 
     }
   };
 
-  // Add this helper to check verification
+  // // Add this helper to check verification
   const isVerified = profile?.verificationStatus === 'verified';
   const isPending = profile?.verificationStatus === 'pending';
   const isRejected = profile?.verificationStatus === 'rejected';
 
-  // Redirect to verification screen if not verified
-  React.useEffect(() => {
-    if (profile && !isVerified && view !== 'profile') {
-      // Only redirect if not already on verification screen
-      if (propNavigation && propNavigation.navigate) {
-        propNavigation.navigate('DriverVerification');
+  useEffect(() => {
+    async function checkCommission() {
+      const data = await getCommissionSummary(auth.currentUser?.uid);
+      if (data?.pendingCommission > 500) {
+        Alert.alert(
+          'Commission Due',
+          'You have unpaid commission over ₹500. Please pay to continue.'
+        );
+        // Optionally, set a state to disable online toggle here
+        // setOnlineBlocked(true);
+      } else {
+        // setOnlineBlocked(false);
       }
     }
-  }, [profile, isVerified, view]);
+    checkCommission();
+  }, []);
+
+  // // Replace the old fetchCommission useEffect with a real-time listener
+  useEffect(() => {
+    const user = auth.currentUser;
+    if (!user) return;
+    const driverRef = doc(db, 'drivers', user.uid);
+    setCommissionLoading(true);
+    const unsubscribe = onSnapshot(driverRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setPendingCommission(data.pendingCommission || 0);
+        setTotalEarnings(data.totalEarnings || 0);
+        setPlatformFeeDue(data.commissionDue || 0);
+        setTotalPlatformPaid(data.totalCommissionPaid || 0);
+      }
+      setCommissionLoading(false);
+    });
+    return unsubscribe;
+  }, []);
 
   return (
     <View style={{ flex: 1, backgroundColor: Colors.light.surface, paddingHorizontal: 18, paddingTop: 8 }}>
-      {/* Block access if not verified and not on profile/verification */}
-      {profile && !isVerified && view !== 'profile' && (
-        isPending ? (
-          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 }}>
-            <Text style={{ fontSize: 20, color: Colors.light.primary, fontWeight: 'bold', marginBottom: 16, textAlign: 'center' }}>
-              Documents under review
-            </Text>
-            <Text style={{ fontSize: 15, color: Colors.light.secondary, textAlign: 'center', marginBottom: 24 }}>
-              Your documents have been submitted and are currently under review. You will be notified once your account is verified or if any issues are found.
-            </Text>
-          </View>
-        ) : (
-          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 }}>
-            <Text style={{ fontSize: 20, color: Colors.light.primary, fontWeight: 'bold', marginBottom: 16, textAlign: 'center' }}>
-              Your account is not verified
-            </Text>
-            <Text style={{ fontSize: 15, color: Colors.light.secondary, textAlign: 'center', marginBottom: 24 }}>
-              Please upload your documents for verification to unlock all features.
-            </Text>
-            <TouchableOpacity
-              style={{ backgroundColor: Colors.light.primary, borderRadius: 999, paddingVertical: 16, paddingHorizontal: 32 }}
-              onPress={() => propNavigation.navigate('DriverVerification')}
-            >
-              <Text style={{ color: Colors.light.surface, fontWeight: 'bold', fontSize: 16 }}>Go to Verification</Text>
-            </TouchableOpacity>
-          </View>
-        )
-      )}
-     
+      {/* Show only profile content if on profile view */}
       {view === 'profile' ? (
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={{ paddingTop: 10, paddingBottom: 40, paddingHorizontal: 0, alignItems: 'center' }}
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={{ width: '100%', maxWidth: 400, alignItems: 'center', padding: 36, backgroundColor: Colors.light.card, borderRadius: 32, shadowColor: Colors.light.primary, shadowOpacity: 0.08, shadowRadius: 12, marginBottom: 18 }}>
-            <Text style={{ fontSize: 28, fontWeight: 'bold', color: Colors.light.secondary, marginBottom: 8, textAlign: 'center', letterSpacing: 1, fontFamily: 'Inter' }}>
-              {profile && isValidProfile(profile) ? 'Edit Profile' : 'Add Profile Details'}
-            </Text>
-            <Text style={{ fontSize: 16, color: Colors.light.secondary, marginBottom: 24, textAlign: 'center', fontWeight: '600', fontFamily: 'Inter' }}>
-              {profile && isValidProfile(profile) ? 'Update your details' : 'Add your details to start accepting rides'}
-            </Text>
-            {editProfile && (
-              <>
-                <TouchableOpacity style={{ marginBottom: 24 }} onPress={pickEditProfilePhoto} activeOpacity={0.85}>
-                  {editPhoto ? (
-                    <Image source={{ uri: editPhoto }} style={{ width: 96, height: 96, borderRadius: 48, borderWidth: 2, borderColor: Colors.light.primary, marginBottom: 8 }} />
-                  ) : (
-                    <View style={{ width: 96, height: 96, borderRadius: 48, backgroundColor: Colors.light.background, alignItems: 'center', justifyContent: 'center', marginBottom: 8 }}>
-                      <MaterialCommunityIcons name="account" size={48} color={Colors.light.primary} />
-                    </View>
-                  )}
-                  <Text style={{ fontSize: 15, fontWeight: 'bold', textAlign: 'center', color: Colors.light.primary, fontFamily: 'Inter' }}>Change Photo</Text>
-                </TouchableOpacity>
-                <View style={{ width: '100%', marginBottom: 18 }}>
-                  <Text style={{ fontSize: 15, fontWeight: '600', marginBottom: 4, color: Colors.light.secondary, fontFamily: 'Inter' }}>Full Name</Text>
-                  <TextInput
-                    value={editProfile.name}
-                    onChangeText={v => {
-                      setEditProfile({ ...editProfile, name: v });
-                      setProfileErrors({ ...profileErrors, name: v ? '' : 'Name is required' });
-                    }}
-                    style={{ width: '100%', backgroundColor: Colors.light.background, borderRadius: 12, borderWidth: 1, borderColor: Colors.light.surface, paddingHorizontal: 18, paddingVertical: 14, fontSize: 15, color: Colors.light.secondary, marginBottom: 2, fontFamily: 'Inter' }}
-                    placeholder="Full Name"
-                    placeholderTextColor={Colors.light.secondary + '99'}
-                  />
-                  {profileErrors.name ? <Text style={{ color: '#e53935', marginBottom: 2 }}>{profileErrors.name}</Text> : null}
-                </View>
-                <View style={{ width: '100%', marginBottom: 18 }}>
-                  <Text style={{ fontSize: 15, fontWeight: '600', marginBottom: 4, color: Colors.light.secondary, fontFamily: 'Inter' }}>Mobile Number</Text>
-                  <TextInput
-                    value={editProfile.mobile}
-                    onChangeText={v => {
-                      setEditProfile({ ...editProfile, mobile: v });
-                      setProfileErrors({ ...profileErrors, mobile: /^\d{10}$/.test(v) ? '' : 'Enter a valid 10-digit mobile number' });
-                    }}
-                    style={{ width: '100%', backgroundColor: Colors.light.background, borderRadius: 12, borderWidth: 1, borderColor: Colors.light.surface, paddingHorizontal: 18, paddingVertical: 14, fontSize: 15, color: Colors.light.secondary, marginBottom: 2, fontFamily: 'Inter' }}
-                    placeholder="Mobile Number"
-                    placeholderTextColor={Colors.light.secondary + '99'}
-                    keyboardType="phone-pad"
-                  />
-                  {profileErrors.mobile ? <Text style={{ color: '#e53935', marginBottom: 2 }}>{profileErrors.mobile}</Text> : null}
-                </View>
-                <View style={{ width: '100%', marginBottom: 18 }}>
-                  <Text style={{ fontSize: 15, fontWeight: '600', marginBottom: 4, color: Colors.light.secondary, fontFamily: 'Inter' }}>Driving License Number</Text>
-                  <TextInput
-                    value={editProfile.license}
-                    onChangeText={v => {
-                      setEditProfile({ ...editProfile, license: v });
-                      setProfileErrors({ ...profileErrors, license: v.length >= 5 ? '' : 'Enter a valid license number' });
-                    }}
-                    style={{ width: '100%', backgroundColor: Colors.light.background, borderRadius: 12, borderWidth: 1, borderColor: Colors.light.surface, paddingHorizontal: 18, paddingVertical: 14, fontSize: 15, color: Colors.light.secondary, marginBottom: 2, fontFamily: 'Inter' }}
-                    placeholder="License Number"
-                    placeholderTextColor={Colors.light.secondary + '99'}
-                  />
-                  {profileErrors.license ? <Text style={{ color: '#e53935', marginBottom: 2 }}>{profileErrors.license}</Text> : null}
-                </View>
-                <View style={{ width: '100%', marginBottom: 18 }}>
-                  <Text style={{ fontSize: 15, fontWeight: '600', marginBottom: 4, color: Colors.light.secondary, fontFamily: 'Inter' }}>Vehicle Number</Text>
-                  <TextInput
-                    value={editProfile.vehicle}
-                    onChangeText={v => {
-                      setEditProfile({ ...editProfile, vehicle: v });
-                      setProfileErrors({ ...profileErrors, vehicle: v ? '' : 'Vehicle number is required' });
-                    }}
-                    style={{ width: '100%', backgroundColor: Colors.light.background, borderRadius: 12, borderWidth: 1, borderColor: Colors.light.surface, paddingHorizontal: 18, paddingVertical: 14, fontSize: 15, color: Colors.light.secondary, marginBottom: 2, fontFamily: 'Inter' }}
-                    placeholder="Vehicle Number"
-                    placeholderTextColor={Colors.light.secondary + '99'}
-                  />
-                  {profileErrors.vehicle ? <Text style={{ color: '#e53935', marginBottom: 2 }}>{profileErrors.vehicle}</Text> : null}
-                </View>
-                {editProfile?.vehicleType === 'bike' && (
-                  <View style={{ width: '100%', marginBottom: 18 }}>
-                    <Text style={{ fontSize: 15, fontWeight: '600', marginBottom: 4, color: Colors.light.secondary, fontFamily: 'Inter' }}>Bike Model</Text>
-                    <TextInput
-                      value={editProfile.bikeModel || ''}
-                      onChangeText={v => setEditProfile({ ...editProfile, bikeModel: v })}
-                      style={{ width: '100%', backgroundColor: Colors.light.background, borderRadius: 12, borderWidth: 1, borderColor: Colors.light.surface, paddingHorizontal: 18, paddingVertical: 14, fontSize: 15, color: Colors.light.secondary, marginBottom: 2, fontFamily: 'Inter' }}
-                      placeholder="Bike Model"
-                      placeholderTextColor={Colors.light.secondary + '99'}
-                    />
-                  </View>
-                )}
-                <View style={{ width: '100%', marginBottom: 18 }}>
-                  <Text style={{ fontSize: 15, fontWeight: '700', marginBottom: 6, color: Colors.light.secondary, fontFamily: 'Inter' }}>Vehicle Type</Text>
-                  <View style={{ flexDirection: 'row', marginBottom: 2 }}>
-                    <TouchableOpacity
-                      style={{ flex: 1, padding: 14, borderRadius: 12, marginRight: 8, backgroundColor: editProfile.vehicleType === 'auto' ? Colors.light.primary : Colors.light.surface, alignItems: 'center' }}
-                      onPress={() => setEditProfile({ ...editProfile, vehicleType: 'auto' })}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={{ color: editProfile.vehicleType === 'auto' ? Colors.light.surface : Colors.light.primary, fontWeight: 'bold', fontFamily: 'Inter' }}>Auto</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={{ flex: 1, padding: 14, borderRadius: 12, marginLeft: 8, backgroundColor: editProfile.vehicleType === 'bike' ? Colors.light.primary : Colors.light.surface, alignItems: 'center' }}
-                      onPress={() => setEditProfile({ ...editProfile, vehicleType: 'bike' })}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={{ color: editProfile.vehicleType === 'bike' ? Colors.light.surface : Colors.light.primary, fontWeight: 'bold', fontFamily: 'Inter' }}>Bike</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-                {editProfile?.vehicleType === 'bike' && (
-                  <View style={{ width: '100%', marginBottom: 18 }}>
-                    <Text style={{ fontSize: 15, fontWeight: '600', marginBottom: 4, color: Colors.light.secondary, fontFamily: 'Inter' }}>Bike Model</Text>
-                    <TextInput
-                      value={editProfile.bikeModel || ''}
-                      onChangeText={v => setEditProfile({ ...editProfile, bikeModel: v })}
-                      style={{ width: '100%', backgroundColor: Colors.light.background, borderRadius: 12, borderWidth: 1, borderColor: Colors.light.surface, paddingHorizontal: 18, paddingVertical: 14, fontSize: 15, color: Colors.light.secondary, marginBottom: 2, fontFamily: 'Inter' }}
-                      placeholder="Bike Model"
-                      placeholderTextColor={Colors.light.secondary + '99'}
-                    />
-                  </View>
-                )}
-                <TouchableOpacity
-                  style={{ backgroundColor: Colors.light.primary, borderRadius: 999, paddingVertical: 16, width: '100%', alignItems: 'center', marginBottom: 2, marginTop: 18, shadowColor: Colors.light.primary, shadowOpacity: 0.12, shadowRadius: 8, elevation: 2 }}
-                  onPress={handleSaveProfile}
-                  disabled={savingProfile || !isValidProfile(editProfile)}
-                  activeOpacity={0.85}
-                >
-                  <Text style={{ color: Colors.light.surface, fontSize: 17, fontWeight: 'bold', fontFamily: 'Inter' }}>
-                    {savingProfile ? 'Saving...' : (profile && isValidProfile(profile) ? 'Update Profile' : 'Create Profile')}
-                  </Text>
-                </TouchableOpacity>
-              </>
-            )}
-          </View>
-        </ScrollView>
+        (() => {
+          propNavigation.navigate('DriverProfileScreen');
+          return null;
+        })()
       ) : (
-        <View style={{ flex: 1, paddingBottom: 40, paddingHorizontal: 4 }}>
-            {/* Greeting Message */}
-            {(() => {
-              const now = new Date();
-              const hour = now.getHours();
-              let greeting = 'Good morning,';
-              if (hour >= 12 && hour < 17) greeting = 'Good afternoon,';
-              else if (hour >= 17 || hour < 4) greeting = 'Good evening,';
-              return (
-                <Text style={{ fontSize: 30, color: Colors.light.primary, marginBottom: 16, fontFamily: 'Inter', textAlign: 'center', fontWeight: 'bold' }}>{greeting}</Text>
-              );
-            })()}
-          {checkingActiveRide && (
-            <View style={{
-              backgroundColor: Colors.light.primary + '15',
-              borderRadius: 16,
-              padding: 16,
-              marginBottom: 16,
-              borderLeftWidth: 4,
-              borderLeftColor: Colors.light.primary,
-              flexDirection: 'row',
-              alignItems: 'center'
-            }}>
-              <ActivityIndicator size="small" color={Colors.light.primary} style={{ marginRight: 12 }} />
-              <Text style={{
-                fontSize: 14,
-                color: Colors.light.primary,
-                fontWeight: '600',
-                fontFamily: 'Inter',
-                flex: 1
-              }}>
-                Checking for active rides...
-              </Text>
-            </View>
-          )}
-          
-
-          {/* Profile Card */}
+        // Only show main content and tabs if not on profile view
+        <>
+          {/* Greeting message: show for all tabs except profile */}
+          {(() => {
+            const now = new Date();
+            const hour = now.getHours();
+            let greeting = 'Good morning,';
+            if (hour >= 12 && hour < 17) greeting = 'Good afternoon,';
+            else if (hour >= 17 || hour < 4) greeting = 'Good evening,';
+            return (
+              <Text style={{ fontSize: 30, color: Colors.light.primary, marginBottom: 4, marginTop: 8, fontFamily: 'Poppins-SemiBold', textAlign: 'center' }}>{greeting}</Text>
+            );
+          })()}
+          {/* Earnings summary card: show for all tabs except profile */}
           <View
             style={{ padding: 20, backgroundColor: Colors.light.card, borderRadius: 28, alignItems: 'center', marginBottom: 24, shadowColor: Colors.light.primary, shadowOpacity: 0.08, shadowRadius: 8, elevation: 2 }}
           >
-           
             {/* Earnings and Ride Count Summary */}
             {historyLoading ? (
               <ActivityIndicator size="large" color={Colors.light.primary} />
@@ -1180,19 +1095,19 @@ export default function DriverHomeScreen({ navigation: propNavigation, route }: 
                 const completedCount = history.length;
                 return (
                   <>
-                    <Text style={{ fontSize: 22, fontWeight: 'bold', color: Colors.light.secondary, fontFamily: 'Inter', marginBottom: 12 }}>Your Earnings</Text>
+                    <Text style={{ fontSize: 22, fontWeight: 'bold', color: Colors.light.secondary, fontFamily: 'Poppins-Medium', marginBottom: 12 }}>Your Earnings</Text>
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', width: '100%', marginBottom: 10 }}>
                       <View style={{ flex: 1, alignItems: 'center' }}>
-                        <Text style={{ fontSize: 16, color: Colors.light.secondary, fontFamily: 'Inter', marginBottom: 5, marginTop:5 }}>Total</Text>
-                        <Text style={{ fontSize: 20, fontWeight: 'bold', color: Colors.light.primary, fontFamily: 'Inter' }}>₹{totalEarnings}</Text>
+                        <Text style={{ fontSize: 16, color: Colors.light.secondary, fontFamily: 'Poppins-Medium', marginBottom: 2, marginTop: 5 }}>Total</Text>
+                        <Text style={{ fontSize: 20, color: Colors.light.primary, fontFamily: 'Poppins-SemiBold' }}>₹{totalEarnings}</Text>
                       </View>
                       <View style={{ flex: 1, alignItems: 'center' }}>
-                        <Text style={{ fontSize: 16, color: Colors.light.secondary, fontFamily: 'Inter', marginBottom: 5, marginTop: 5 }}>Today</Text>
-                        <Text style={{ fontSize: 20, fontWeight: 'bold', color: Colors.light.primary, fontFamily: 'Inter' }}>₹{todayEarnings}</Text>
+                        <Text style={{ fontSize: 16, color: Colors.light.secondary, fontFamily: 'Poppins-Medium', marginBottom: 2, marginTop: 5 }}>Today</Text>
+                        <Text style={{ fontSize: 20, color: Colors.light.primary, fontFamily: 'Poppins-SemiBold' }}>₹{todayEarnings}</Text>
                       </View>
                       <View style={{ flex: 1, alignItems: 'center' }}>
-                        <Text style={{ fontSize: 16, color: Colors.light.secondary, fontFamily: 'Inter', marginBottom: 5, marginTop:5 }}>Completed</Text>
-                        <Text style={{ fontSize: 20, fontWeight: 'bold', color: Colors.light.primary, fontFamily: 'Inter' }}>{completedCount}</Text>
+                        <Text style={{ fontSize: 16, color: Colors.light.secondary, fontFamily: 'Poppins-Medium', marginBottom: 2, marginTop: 5 }}>Rides</Text>
+                        <Text style={{ fontSize: 20, color: Colors.light.primary, fontFamily: 'Poppins-SemiBold' }}>{completedCount}</Text>
                       </View>
                     </View>
                   </>
@@ -1203,265 +1118,358 @@ export default function DriverHomeScreen({ navigation: propNavigation, route }: 
           {/* Navigation Tabs */}
           <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 24 }}>
             <TouchableOpacity onPress={() => setView('available')} style={{ flex: 1, paddingVertical: 16, borderRadius: 14, marginRight: 6, backgroundColor: view === 'available' ? Colors.light.primary : Colors.light.surface, alignItems: 'center', shadowColor: Colors.light.primary, shadowOpacity: view === 'available' ? 0.10 : 0, shadowRadius: 6, elevation: view === 'available' ? 2 : 0 }}>
-              <Text style={{ fontWeight: 'bold', color: view === 'available' ? Colors.light.surface : Colors.light.primary, fontFamily: 'Inter' }}>Available</Text>
+              <Text style={{ fontWeight: 'bold', color: view === 'available' ? Colors.light.surface : Colors.light.primary, fontFamily: 'Poppins-Medium' }}>Available</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setView('history')} style={{ flex: 1, paddingVertical: 16, borderRadius: 14, marginHorizontal: 3, backgroundColor: view === 'history' ? Colors.light.primary : Colors.light.surface, alignItems: 'center', shadowColor: Colors.light.primary, shadowOpacity: view === 'history' ? 0.10 : 0, shadowRadius: 6, elevation: view === 'history' ? 2 : 0 }}>
-              <Text style={{ fontWeight: 'bold', color: view === 'history' ? Colors.light.surface : Colors.light.primary, fontFamily: 'Inter' }}>Completed</Text>
+              <Text style={{ fontWeight: 'bold', color: view === 'history' ? Colors.light.surface : Colors.light.primary, fontFamily: 'Poppins-Medium' }}>Completed</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setView('all')} style={{ flex: 1, paddingVertical: 16, borderRadius: 14, marginLeft: 6, backgroundColor: view === 'all' ? Colors.light.primary : Colors.light.surface, alignItems: 'center', shadowColor: Colors.light.primary, shadowOpacity: view === 'all' ? 0.10 : 0, shadowRadius: 6, elevation: view === 'all' ? 2 : 0 }}>
-              <Text style={{ fontWeight: 'bold', color: view === 'all' ? Colors.light.surface : Colors.light.primary, fontFamily: 'Inter' }}>All Rides</Text>
+              <Text style={{ fontWeight: 'bold', color: view === 'all' ? Colors.light.surface : Colors.light.primary, fontFamily: 'Poppins-Medium' }}>All Rides</Text>
             </TouchableOpacity>
           </View>
-          {/* Main Content */}
-          {view === 'available' && (
-            <>
-              {locationError && (
-                <Text style={{ color: '#e53935', textAlign: 'center', marginBottom: 14, fontFamily: 'Inter' }}>{locationError}</Text>
-              )}
-              {checkingActiveRide ? (
-                <View style={{ alignItems: 'center', paddingVertical: 40 }}>
-                  <ActivityIndicator size="large" color={Colors.light.primary} />
-                  <Text style={{ fontSize: 16, color: Colors.light.secondary, textAlign: 'center', marginTop: 16, fontFamily: 'Inter' }}>
-                    Checking for active rides...
+
+          {commissionLoading ? (
+            <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+              <ActivityIndicator size="large" color={Colors.light.primary} />
+              <Text style={{ fontSize: 16, color: Colors.light.secondary, textAlign: 'center', marginTop: 16, fontFamily: 'Poppins-Medium' }}>
+                Checking commission status...
+              </Text>
+            </View>
+          ) : pendingCommission > 500 ? (
+            <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+              <View style={{
+                backgroundColor: Colors.light.card,
+                borderRadius: 18,
+                paddingVertical: 22,
+                paddingHorizontal: 16,
+                width: '90%',
+                shadowColor: '#dc2626',
+                shadowOpacity: 0.08,
+                shadowRadius: 8,
+                elevation: 2,
+                alignItems: 'center',
+                marginBottom: 16
+              }}>
+                <MaterialCommunityIcons name="lock-alert" size={54} color="#dc2626" style={{ marginBottom: 14 }} />
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+                  <Text style={{ fontSize: 16, color: '#dc2626', fontWeight: 'bold', textAlign: 'center', fontFamily: 'Poppins-Medium', marginRight: 5 }}>
+                    Account Locked
                   </Text>
-                </View>
-              ) : (!profile || !profile.vehicleType) ? (
-                <View style={{ alignItems: 'center', paddingVertical: 40 }}>
-                  <MaterialCommunityIcons name="car" size={64} color={Colors.light.secondary + '40'} />
-                  <Text style={{ fontSize: 16, color: Colors.light.secondary, textAlign: 'center', marginTop: 16, fontFamily: 'Inter' }}>
-                    Complete your profile first
-                  </Text>
-                  <Text style={{ fontSize: 14, color: Colors.light.secondary + 'CC', textAlign: 'center', marginTop: 8, fontFamily: 'Inter' }}>
-                    Set your vehicle type to see available rides
-                  </Text>
-                  <TouchableOpacity
-                    style={{ marginTop: 16, backgroundColor: Colors.light.primary, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 20 }}
-                    onPress={() => setView('profile')}
+                  <Pressable
+                    onPress={() => Alert.alert(
+                      'Why is my account locked?',
+                      'Skooty charges a 15% platform support fee to help maintain the app, provide support, and cover platform fees.'
+                    )}
+                    style={{}}
                   >
-                    <Text style={{ color: Colors.light.surface, fontWeight: 'bold', fontFamily: 'Inter' }}>Go to Profile</Text>
-                  </TouchableOpacity>
+                    <MaterialCommunityIcons name="information-outline" size={18} color="#dc2626" />
+                  </Pressable>
                 </View>
-              ) : (
-                <>
-                  {loading ? (
-                    <ActivityIndicator size="large" color={Colors.light.primary} />
-                  ) : error ? (
-                    <Text style={{ color: '#e53935', textAlign: 'center', marginBottom: 14, fontFamily: 'Inter' }}>{error}</Text>
-                  ) : (
-                    <FlatList
-                      data={rides}
-                      keyExtractor={item => item.id}
-                      renderItem={({ item }) => (
-                        <View style={{ padding: 22, backgroundColor: Colors.light.surface, borderRadius: 20, marginBottom: 18, shadowColor: Colors.light.primary, shadowOpacity: 0.06, shadowRadius: 6, elevation: 1 }}>
-                          <Text style={{ fontSize: 16, color: Colors.light.secondary, fontWeight: '600', marginBottom: 4, fontFamily: 'Inter' }}>Fare: <Text style={{ color: Colors.light.primary }}>₹{item.fare}</Text></Text>
-                          <Text style={{ fontSize: 15, color: Colors.light.secondary, marginBottom: 4, fontFamily: 'Inter' }}>Pickup: {pickupAddresses[item.id] || 'Loading...'}</Text>
-                          <Text style={{ fontSize: 15, color: Colors.light.secondary, marginBottom: 10, fontFamily: 'Inter' }}>Drop-off: {dropoffAddresses[item.id] || 'Loading...'}</Text>
-                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
-                            <TouchableOpacity
-                              style={{
-                                flex: 1,
-                                paddingVertical: 12,
-                                backgroundColor: acceptingRide === item.id ? Colors.light.secondary : Colors.light.primary,
-                                borderRadius: 12,
-                                alignItems: 'center',
-                                marginRight: 8,
-                                shadowColor: Colors.light.primary,
-                                shadowOpacity: 0.2,
-                                shadowRadius: 4,
-                                elevation: 2,
-                                flexDirection: 'row',
-                                justifyContent: 'center'
-                              }}
-                              onPress={() => handleAcceptRide(item.id)}
-                              disabled={acceptingRide === item.id}
-                            >
-                              {acceptingRide === item.id ? (
-                                <ActivityIndicator size="small" color={Colors.light.surface} style={{ marginRight: 4 }} />
-                              ) : (
-                                <MaterialCommunityIcons name="check" size={16} color={Colors.light.surface} style={{ marginRight: 4 }} />
-                              )}
-                              <Text style={{ fontSize: 15, fontWeight: 'bold', color: Colors.light.surface, fontFamily: 'Inter' }}>
-                                {acceptingRide === item.id ? 'Accepting...' : 'Accept'}
+                <Text style={{ fontSize: 13, color: '#b91c1c', textAlign: 'center', marginBottom: 18, fontFamily: 'Poppins-Medium', lineHeight: 18, paddingHorizontal: 4 }}>
+                  Your pending platform support fee is above ₹500. Please pay to unlock ride access.
+                </Text>
+                <TouchableOpacity
+                  style={{
+                    backgroundColor: Colors.light.primary,
+                    borderRadius: 12,
+                    paddingVertical: 10,
+                    paddingHorizontal: 28,
+                    alignItems: 'center',
+                    flexDirection: 'row',
+                    justifyContent: 'center',
+                    shadowColor: Colors.light.primary,
+                    shadowOpacity: 0.12,
+                    shadowRadius: 5,
+                    elevation: 1
+                  }}
+                  onPress={() => propNavigation.navigate('CommissionSummary')}
+                >
+                  <MaterialCommunityIcons name="credit-card-check" size={16} color={Colors.light.surface} style={{ marginRight: 6 }} />
+                  <Text style={{ color: Colors.light.surface, fontWeight: 'bold', fontSize: 14, fontFamily: 'Poppins-Medium' }}>Pay Platform Fee</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : isPending ? (
+            <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+              <MaterialCommunityIcons name="clock-alert" size={54} color="#f59e42" style={{ marginBottom: 14 }} />
+              <Text style={{ fontSize: 16, color: '#f59e42', fontWeight: 'bold', textAlign: 'center', fontFamily: 'Poppins-Medium', marginBottom: 8 }}>
+                Documents Under Review
+              </Text>
+              <Text style={{ fontSize: 13, color: '#b45309', textAlign: 'center', marginBottom: 18, fontFamily: 'Poppins-Medium', lineHeight: 18, paddingHorizontal: 4 }}>
+                Your documents have been submitted and are currently under review. You will be notified once your account is verified.
+              </Text>
+            </View>
+          ) : !isVerified ? (
+            <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+              <MaterialCommunityIcons name="lock-alert" size={54} color="#dc2626" style={{ marginBottom: 14 }} />
+              <Text style={{ fontSize: 16, color: '#dc2626', fontWeight: 'bold', textAlign: 'center', fontFamily: 'Poppins-Medium', marginBottom: 8 }}>
+                Account Not Verified
+              </Text>
+              <Text style={{ fontSize: 13, color: '#b91c1c', textAlign: 'center', marginBottom: 18, fontFamily: 'Poppins-Medium', lineHeight: 18, paddingHorizontal: 4 }}>
+                Your account is not verified yet. Please complete your verification to access ride features.
+              </Text>
+              <TouchableOpacity
+                style={{
+                  backgroundColor: Colors.light.primary,
+                  borderRadius: 12,
+                  paddingVertical: 10,
+                  paddingHorizontal: 28,
+                  alignItems: 'center',
+                  flexDirection: 'row',
+                  justifyContent: 'center',
+                  shadowColor: Colors.light.primary,
+                  shadowOpacity: 0.12,
+                  shadowRadius: 5,
+                  elevation: 1
+                }}
+                onPress={() => propNavigation.navigate('DriverVerification')}
+              >
+                <MaterialCommunityIcons name="account-check" size={16} color={Colors.light.surface} style={{ marginRight: 6 }} />
+                <Text style={{ color: Colors.light.surface, fontWeight: 'bold', fontSize: 14, fontFamily: 'Poppins-Medium' }}>Verify Now</Text>
+              </TouchableOpacity>
+            </View>
+          ) : locationError ? (
+            <Text style={{ color: '#e53935', textAlign: 'center', marginBottom: 14, fontFamily: 'Poppins-Medium' }}>{locationError}</Text>
+          ) : checkingActiveRide ? (
+            <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+              <ActivityIndicator size="large" color={Colors.light.primary} />
+              <Text style={{ fontSize: 16, color: Colors.light.secondary, textAlign: 'center', marginTop: 16, fontFamily: 'Poppins-Medium' }}>
+                Checking for active rides...
+              </Text>
+            </View>
+          ) : (
+            <>
+              {/* Tab content: show only the correct list for each tab */}
+              {view === 'available' && (
+                loading ? (
+                  <ActivityIndicator size="large" color={Colors.light.primary} />
+                ) : error ? (
+                  <Text style={{ color: '#e53935', textAlign: 'center', marginBottom: 14, fontFamily: 'Poppins-Medium' }}>{error}</Text>
+                ) : (!profile || !profile.vehicleType) ? (
+                  <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+                    <MaterialCommunityIcons name="car" size={64} color={Colors.light.secondary + '40'} />
+                    <Text style={{ fontSize: 16, color: Colors.light.secondary, textAlign: 'center', marginTop: 16, fontFamily: 'Poppins-Medium' }}>
+                      Complete your profile first
+                    </Text>
+                    <Text style={{ fontSize: 14, color: Colors.light.secondary + 'CC', textAlign: 'center', marginTop: 8, fontFamily: 'Poppins-Medium' }}>
+                      Set your vehicle type to see available rides
+                    </Text>
+                    <TouchableOpacity
+                      style={{ marginTop: 16, backgroundColor: Colors.light.primary, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 20 }}
+                      onPress={() => setView('profile')}
+                    >
+                      <Text style={{ color: Colors.light.surface, fontWeight: 'bold', fontFamily: 'Poppins-Medium' }}>Go to Profile</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <FlatList
+                    data={rides}
+                    keyExtractor={item => item.id}
+                    renderItem={({ item }) => (
+                      <View style={{ padding: 22, backgroundColor: Colors.light.surface, borderRadius: 20, marginBottom: 18, shadowColor: Colors.light.primary, shadowOpacity: 0.06, shadowRadius: 6, elevation: 1 }}>
+                        <Text style={{ fontSize: 16, color: Colors.light.secondary, fontWeight: '600', marginBottom: 4, fontFamily: 'Poppins-Medium' }}>Fare: <Text style={{ color: Colors.light.primary }}>₹{item.fare}</Text></Text>
+                        <Text style={{ fontSize: 15, color: Colors.light.secondary, marginBottom: 4, fontFamily: 'Poppins-Medium' }}>Pickup: {pickupAddresses[item.id] || 'Loading...'}</Text>
+                        <Text style={{ fontSize: 15, color: Colors.light.secondary, marginBottom: 10, fontFamily: 'Poppins-Medium' }}>Drop-off: {dropoffAddresses[item.id] || 'Loading...'}</Text>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+                          <TouchableOpacity
+                            style={{
+                              flex: 1,
+                              paddingVertical: 12,
+                              backgroundColor: acceptingRide === item.id ? Colors.light.secondary : Colors.light.primary,
+                              borderRadius: 12,
+                              alignItems: 'center',
+                              marginRight: 8,
+                              shadowColor: Colors.light.primary,
+                              shadowOpacity: 0.2,
+                              shadowRadius: 4,
+                              elevation: 2,
+                              flexDirection: 'row',
+                              justifyContent: 'center'
+                            }}
+                            onPress={() => handleAcceptRide(item.id)}
+                            disabled={acceptingRide === item.id}
+                          >
+                            {acceptingRide === item.id ? (
+                              <ActivityIndicator size="small" color={Colors.light.surface} style={{ marginRight: 4 }} />
+                            ) : (
+                              <MaterialCommunityIcons name="check" size={16} color={Colors.light.surface} style={{ marginRight: 4 }} />
+                            )}
+                            <Text style={{ fontSize: 15, fontWeight: 'bold', color: Colors.light.surface, fontFamily: 'Poppins-Medium' }}>
+                              {acceptingRide === item.id ? 'Accepting...' : 'Accept'}
+                            </Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={{
+                              flex: 1,
+                              paddingVertical: 12,
+                              backgroundColor: '#FF3B30',
+                              borderRadius: 12,
+                              alignItems: 'center',
+                              marginLeft: 8,
+                              shadowColor: '#FF3B30',
+                              shadowOpacity: 0.2,
+                              shadowRadius: 4,
+                              elevation: 2,
+                              flexDirection: 'row',
+                              justifyContent: 'center'
+                            }}
+                            onPress={() => handleRejectRide(item.id)}
+                          >
+                            <MaterialCommunityIcons name="close" size={16} color={Colors.light.surface} style={{ marginRight: 4 }} />
+                            <Text style={{ fontSize: 15, fontWeight: 'bold', color: Colors.light.surface, fontFamily: 'Poppins-Medium' }}>Reject</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    )}
+                    ListEmptyComponent={<Text style={{ fontSize: 15, color: Colors.light.secondary, textAlign: 'center', fontFamily: 'Poppins-Medium' }}>No available rides.</Text>}
+                  />
+                )
+              )}
+              {view === 'history' && (
+                historyLoading ? (
+                  <ActivityIndicator size="large" color={Colors.light.primary} />
+                ) : (
+                  <FlatList
+                    data={history}
+                    keyExtractor={item => item.id}
+                    renderItem={({ item }) => (
+                      <View style={{ padding: 22, backgroundColor: Colors.light.card, borderRadius: 20, marginBottom: 18, shadowColor: Colors.light.primary, shadowOpacity: 0.06, shadowRadius: 6, elevation: 1 }}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                          <Text style={{ fontSize: 18, color: Colors.light.secondary, fontWeight: 'bold', fontFamily: 'Poppins-Medium' }}>
+                            ₹{item.fare}
+                          </Text>
+                          <View style={{
+                            backgroundColor: '#34C759',
+                            paddingHorizontal: 8,
+                            paddingVertical: 4,
+                            borderRadius: 12
+                          }}>
+                            <Text style={{ fontSize: 12, color: Colors.light.surface, fontWeight: '600', fontFamily: 'Poppins-Medium' }}>
+                              Completed
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View style={{ marginBottom: 8 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                            <MaterialCommunityIcons name="map-marker" size={16} color={Colors.light.primary} />
+                            <Text style={{ fontSize: 14, color: Colors.light.secondary, marginLeft: 6, fontFamily: 'Poppins-Medium' }}>
+                              {historyPickupAddresses[item.id] || 'Loading...'}
+                            </Text>
+                          </View>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                            <MaterialCommunityIcons name="flag-checkered" size={16} color="#34C759" />
+                            <Text style={{ fontSize: 14, color: Colors.light.secondary, marginLeft: 6, fontFamily: 'Poppins-Medium' }}>
+                              {historyDropoffAddresses[item.id] || 'Loading...'}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Text style={{ fontSize: 13, color: Colors.light.secondary + 'CC', fontFamily: 'Poppins-Medium' }}>
+                            {item.createdAt?.toDate ? item.createdAt.toDate().toLocaleDateString() : 'N/A'}
+                          </Text>
+                          {item.paymentMethod && (
+                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                              <MaterialCommunityIcons
+                                name={item.paymentMethod === 'cash' ? 'cash' : 'credit-card'}
+                                size={14}
+                                color={Colors.light.secondary}
+                              />
+                              <Text style={{ fontSize: 13, color: Colors.light.secondary, marginLeft: 4, fontFamily: 'Poppins-Medium' }}>
+                                {item.paymentMethod === 'cash' ? 'Cash' : 'Online'}
                               </Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                              style={{
-                                flex: 1,
-                                paddingVertical: 12,
-                                backgroundColor: '#FF3B30',
-                                borderRadius: 12,
-                                alignItems: 'center',
-                                marginLeft: 8,
-                                shadowColor: '#FF3B30',
-                                shadowOpacity: 0.2,
-                                shadowRadius: 4,
-                                elevation: 2,
-                                flexDirection: 'row',
-                                justifyContent: 'center'
-                              }}
-                              onPress={() => handleRejectRide(item.id)}
-                            >
-                              <MaterialCommunityIcons name="close" size={16} color={Colors.light.surface} style={{ marginRight: 4 }} />
-                              <Text style={{ fontSize: 15, fontWeight: 'bold', color: Colors.light.surface, fontFamily: 'Inter' }}>Reject</Text>
-                            </TouchableOpacity>
-                          </View>
+                            </View>
+                          )}
                         </View>
-                      )}
-                      ListEmptyComponent={<Text style={{ fontSize: 15, color: Colors.light.secondary, textAlign: 'center', fontFamily: 'Inter' }}>No available rides.</Text>}
-                    />
-                  )}
-                </>
+                      </View>
+                    )}
+                    ListEmptyComponent={
+                      <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+                        <MaterialCommunityIcons name="history" size={64} color={Colors.light.secondary + '40'} />
+                        <Text style={{ fontSize: 16, color: Colors.light.secondary, textAlign: 'center', marginTop: 16, fontFamily: 'Poppins-Medium' }}>
+                          No completed rides yet
+                        </Text>
+                        <Text style={{ fontSize: 14, color: Colors.light.secondary + 'CC', textAlign: 'center', marginTop: 8, fontFamily: 'Poppins-Medium' }}>
+                          Your completed rides will appear here
+                        </Text>
+                      </View>
+                    }
+                  />
+                )
               )}
-            </>
-          )}
-          {view === 'history' && (
-            <>
-              {/* <Text style={{ fontSize: 22, fontWeight: 'bold', color: Colors.light.secondary, marginBottom: 14, fontFamily: 'Inter' }}>Completed Rides</Text> */}
-              {historyLoading ? (
-                <ActivityIndicator size="large" color={Colors.light.primary} />
-              ) : (
-                <FlatList
-                  data={history}
-                  keyExtractor={item => item.id}
-                  renderItem={({ item }) => (
-                    <View style={{ padding: 22, backgroundColor: Colors.light.card, borderRadius: 20, marginBottom: 18, shadowColor: Colors.light.primary, shadowOpacity: 0.06, shadowRadius: 6, elevation: 1 }}>
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                        <Text style={{ fontSize: 18, color: Colors.light.secondary, fontWeight: 'bold', fontFamily: 'Inter' }}>
-                          ₹{item.fare}
-                        </Text>
-                        <View style={{
-                          backgroundColor: '#34C759',
-                          paddingHorizontal: 8,
-                          paddingVertical: 4,
-                          borderRadius: 12
-                        }}>
-                          <Text style={{ fontSize: 12, color: Colors.light.surface, fontWeight: '600', fontFamily: 'Inter' }}>
-                            Completed
+              {view === 'all' && (
+                allRidesLoading ? (
+                  <ActivityIndicator size="large" color={Colors.light.primary} />
+                ) : (
+                  <FlatList
+                    data={allRides}
+                    keyExtractor={item => item.id}
+                    renderItem={({ item }) => (
+                      <View style={{ padding: 22, backgroundColor: Colors.light.surface, borderRadius: 20, marginBottom: 18, shadowColor: Colors.light.primary, shadowOpacity: 0.06, shadowRadius: 6, elevation: 1 }}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                          <Text style={{ fontSize: 18, color: Colors.light.secondary, fontWeight: 'bold', fontFamily: 'Poppins-Medium' }}>
+                            ₹{item.fare}
                           </Text>
-                        </View>
-                      </View>
-
-                      <View style={{ marginBottom: 8 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
-                          <MaterialCommunityIcons name="map-marker" size={16} color={Colors.light.primary} />
-                          <Text style={{ fontSize: 14, color: Colors.light.secondary, marginLeft: 6, fontFamily: 'Inter' }}>
-                            {historyPickupAddresses[item.id] || 'Loading...'}
-                          </Text>
-                        </View>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
-                          <MaterialCommunityIcons name="flag-checkered" size={16} color="#34C759" />
-                          <Text style={{ fontSize: 14, color: Colors.light.secondary, marginLeft: 6, fontFamily: 'Inter' }}>
-                            {historyDropoffAddresses[item.id] || 'Loading...'}
-                          </Text>
-                        </View>
-                      </View>
-
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <Text style={{ fontSize: 13, color: Colors.light.secondary + 'CC', fontFamily: 'Inter' }}>
-                          {item.createdAt?.toDate ? item.createdAt.toDate().toLocaleDateString() : 'N/A'}
-                        </Text>
-                        {item.paymentMethod && (
-                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                            <MaterialCommunityIcons
-                              name={item.paymentMethod === 'cash' ? 'cash' : 'credit-card'}
-                              size={14}
-                              color={Colors.light.secondary}
-                            />
-                            <Text style={{ fontSize: 13, color: Colors.light.secondary, marginLeft: 4, fontFamily: 'Inter' }}>
-                              {item.paymentMethod === 'cash' ? 'Cash' : 'Online'}
+                          <View style={{
+                            backgroundColor: item.status === 'Completed' ? '#34C759' :
+                              item.status === 'Ride in progress' ? '#FF9500' :
+                                item.status === 'Driver on the way' ? Colors.light.primary : '#999',
+                            paddingHorizontal: 8,
+                            paddingVertical: 4,
+                            borderRadius: 12
+                          }}>
+                            <Text style={{ fontSize: 12, color: Colors.light.surface, fontWeight: '600', fontFamily: 'Poppins-Medium' }}>
+                              {item.status || 'Unknown'}
                             </Text>
                           </View>
-                        )}
-                      </View>
-                    </View>
-                  )}
-                  ListEmptyComponent={
-                    <View style={{ alignItems: 'center', paddingVertical: 40 }}>
-                      <MaterialCommunityIcons name="history" size={64} color={Colors.light.secondary + '40'} />
-                      <Text style={{ fontSize: 16, color: Colors.light.secondary, textAlign: 'center', marginTop: 16, fontFamily: 'Inter' }}>
-                        No completed rides yet
-                      </Text>
-                      <Text style={{ fontSize: 14, color: Colors.light.secondary + 'CC', textAlign: 'center', marginTop: 8, fontFamily: 'Inter' }}>
-                        Your completed rides will appear here
-                      </Text>
-                    </View>
-                  }
-                />
-              )}
-            </>
-          )}
-          {view === 'all' && (
-            <>
-              {allRidesLoading ? (
-                <ActivityIndicator size="large" color={Colors.light.primary} />
-              ) : (
-                <FlatList
-                  data={allRides}
-                  keyExtractor={item => item.id}
-                  renderItem={({ item }) => (
-                    <View style={{ padding: 22, backgroundColor: Colors.light.surface, borderRadius: 20, marginBottom: 18, shadowColor: Colors.light.primary, shadowOpacity: 0.06, shadowRadius: 6, elevation: 1 }}>
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                        <Text style={{ fontSize: 18, color: Colors.light.secondary, fontWeight: 'bold', fontFamily: 'Inter' }}>
-                          ₹{item.fare}
-                        </Text>
-                        <View style={{
-                          backgroundColor: item.status === 'Completed' ? '#34C759' :
-                            item.status === 'Ride in progress' ? '#FF9500' :
-                              item.status === 'Driver on the way' ? Colors.light.primary : '#999',
-                          paddingHorizontal: 8,
-                          paddingVertical: 4,
-                          borderRadius: 12
-                        }}>
-                          <Text style={{ fontSize: 12, color: Colors.light.surface, fontWeight: '600', fontFamily: 'Inter' }}>
-                            {item.status || 'Unknown'}
+                        </View>
+
+                        <View style={{ marginBottom: 8 }}>
+                          <Text style={{ fontSize: 14, color: Colors.light.secondary, marginBottom: 4, fontFamily: 'Poppins-Medium' }}>
+                            <Text style={{ fontWeight: '600' }}>Pickup:</Text> {item.pickup ? `${item.pickup.latitude.toFixed(5)}, ${item.pickup.longitude.toFixed(5)}` : 'N/A'}
+                          </Text>
+                          <Text style={{ fontSize: 14, color: Colors.light.secondary, marginBottom: 4, fontFamily: 'Poppins-Medium' }}>
+                            <Text style={{ fontWeight: '600' }}>Dropoff:</Text> {item.dropoff ? `${item.dropoff.latitude.toFixed(5)}, ${item.dropoff.longitude.toFixed(5)}` : 'N/A'}
                           </Text>
                         </View>
-                      </View>
 
-                      <View style={{ marginBottom: 8 }}>
-                        <Text style={{ fontSize: 14, color: Colors.light.secondary, marginBottom: 4, fontFamily: 'Inter' }}>
-                          <Text style={{ fontWeight: '600' }}>Pickup:</Text> {item.pickup ? `${item.pickup.latitude.toFixed(5)}, ${item.pickup.longitude.toFixed(5)}` : 'N/A'}
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Text style={{ fontSize: 13, color: Colors.light.secondary + 'CC', fontFamily: 'Poppins-Medium' }}>
+                            {item.createdAt?.toDate ? item.createdAt.toDate().toLocaleDateString() : 'N/A'}
+                          </Text>
+                          {item.paymentMethod && (
+                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                              <MaterialCommunityIcons
+                                name={item.paymentMethod === 'cash' ? 'cash' : 'credit-card'}
+                                size={14}
+                                color={Colors.light.secondary}
+                              />
+                              <Text style={{ fontSize: 13, color: Colors.light.secondary, marginLeft: 4, fontFamily: 'Poppins-Medium' }}>
+                                {item.paymentMethod === 'cash' ? 'Cash' : 'Online'}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                      </View>
+                    )}
+                    ListEmptyComponent={
+                      <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+                        <MaterialCommunityIcons name="car" size={64} color={Colors.light.secondary + '40'} />
+                        <Text style={{ fontSize: 16, color: Colors.light.secondary, textAlign: 'center', marginTop: 16, fontFamily: 'Poppins-Medium' }}>
+                          No rides found
                         </Text>
-                        <Text style={{ fontSize: 14, color: Colors.light.secondary, marginBottom: 4, fontFamily: 'Inter' }}>
-                          <Text style={{ fontWeight: '600' }}>Dropoff:</Text> {item.dropoff ? `${item.dropoff.latitude.toFixed(5)}, ${item.dropoff.longitude.toFixed(5)}` : 'N/A'}
+                        <Text style={{ fontSize: 14, color: Colors.light.secondary + 'CC', textAlign: 'center', marginTop: 8, fontFamily: 'Poppins-Medium' }}>
+                          You haven&apos;t accepted any rides yet
                         </Text>
                       </View>
-
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <Text style={{ fontSize: 13, color: Colors.light.secondary + 'CC', fontFamily: 'Inter' }}>
-                          {item.createdAt?.toDate ? item.createdAt.toDate().toLocaleDateString() : 'N/A'}
-                        </Text>
-                        {item.paymentMethod && (
-                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                            <MaterialCommunityIcons
-                              name={item.paymentMethod === 'cash' ? 'cash' : 'credit-card'}
-                              size={14}
-                              color={Colors.light.secondary}
-                            />
-                            <Text style={{ fontSize: 13, color: Colors.light.secondary, marginLeft: 4, fontFamily: 'Inter' }}>
-                              {item.paymentMethod === 'cash' ? 'Cash' : 'Online'}
-                            </Text>
-                          </View>
-                        )}
-                      </View>
-                    </View>
-                  )}
-                  ListEmptyComponent={
-                    <View style={{ alignItems: 'center', paddingVertical: 40 }}>
-                      <MaterialCommunityIcons name="car" size={64} color={Colors.light.secondary + '40'} />
-                      <Text style={{ fontSize: 16, color: Colors.light.secondary, textAlign: 'center', marginTop: 16, fontFamily: 'Inter' }}>
-                        No rides found
-                      </Text>
-                      <Text style={{ fontSize: 14, color: Colors.light.secondary + 'CC', textAlign: 'center', marginTop: 8, fontFamily: 'Inter' }}>
-                        You haven&apos;t accepted any rides yet
-                      </Text>
-                    </View>
-                  }
-                />
+                    }
+                  />
+                )
               )}
             </>
           )}
-        </View>
+        </>
       )}
     </View>
   );

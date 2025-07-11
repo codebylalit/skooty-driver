@@ -1,14 +1,15 @@
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
-import React, { useState } from 'react';
-import { KeyboardAvoidingView, Platform, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
+import React, { useRef, useState } from 'react';
+import { Image, KeyboardAvoidingView, Platform, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Colors } from '../../constants/Colors';
-import { auth } from '../../firebaseConfig';
+import { firebaseConfig, getFirebaseAuth } from '../../firebaseConfig';
+
 
 interface WelcomeScreenProps {
   navigation: any;
 }
 
-type AuthStep = 'welcome' | 'login' | 'signup';
+type AuthStep = 'welcome' | 'otp' | 'login' | 'signup';
 
 // Helper to map Firebase error codes to user-friendly messages
 function getFriendlyAuthError(error: any) {
@@ -33,177 +34,210 @@ function getFriendlyAuthError(error: any) {
   }
 }
 
+// TypeScript declaration for window.recaptchaVerifier
+declare global {
+  interface Window {
+    recaptchaVerifier?: any;
+  }
+}
+
 export default function WelcomeScreen({ navigation }: WelcomeScreenProps) {
+  const auth = getFirebaseAuth();
   const [authStep, setAuthStep] = useState<AuthStep>('welcome');
   // Welcome (phone)
   const [phone, setPhone] = useState('');
+  const [otp, setOtp] = useState('');
+  const [verificationId, setVerificationId] = useState<string | null>(null);
+  const [otpError, setOtpError] = useState('');
+  const recaptchaVerifier = useRef<any>(null);
   const isValidPhone = /^\d{10}$/.test(phone);
+  const isValidOtp = /^\d{6}$/.test(otp);
   // Login
-  const [loginEmail, setLoginEmail] = useState('');
-  const [loginPassword, setLoginPassword] = useState('');
-  const [loginLoading, setLoginLoading] = useState(false);
-  const [loginError, setLoginError] = useState('');
+  // const [loginEmail, setLoginEmail] = useState('');
+  // const [loginPassword, setLoginPassword] = useState('');
+  // const [loginLoading, setLoginLoading] = useState(false);
+  // const [loginError, setLoginError] = useState('');
   // Signup
-  const [signupEmail, setSignupEmail] = useState('');
-  const [signupPassword, setSignupPassword] = useState('');
-  const [signupLoading, setSignupLoading] = useState(false);
-  const [signupError, setSignupError] = useState('');
+  // const [signupEmail, setSignupEmail] = useState('');
+  // const [signupPassword, setSignupPassword] = useState('');
+  // const [signupLoading, setSignupLoading] = useState(false);
+  // const [signupError, setSignupError] = useState('');
 
   // Auth handlers
-  const handleLogin = async () => {
-    setLoginLoading(true);
-    setLoginError('');
-    try {
-      await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
-            navigation.replace('Home');
+  // const handleLogin = async () => {
+  //   setLoginLoading(true);
+  //   setLoginError('');
+  //   try {
+  //     await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
+  //     navigation.replace('Home');
+  //     // Success: navigation will auto-redirect based on auth state
+  //   } catch (e: any) {
+  //     setLoginError(getFriendlyAuthError(e));
+  //   } finally {
+  //     setLoginLoading(false);
+  //   }
+  // };
+  // const handleSignup = async () => {
+  //   setSignupLoading(true);
+  //   setSignupError('');
+  //   try {
+  //     await createUserWithEmailAndPassword(auth, signupEmail, signupPassword);
+  //     navigation.replace('Home');
+  //     // Success: navigation will auto-redirect based on auth state
+  //   } catch (e: any) {
+  //     setSignupError(getFriendlyAuthError(e));
+  //   } finally {
+  //     setSignupLoading(false);
+  //   }
+  // };
 
-      // Success: navigation will auto-redirect based on auth state
-    } catch (e: any) {
-      setLoginError(getFriendlyAuthError(e));
-    } finally {
-      setLoginLoading(false);
-    }
-  };
-  const handleSignup = async () => {
-    setSignupLoading(true);
-    setSignupError('');
+  // Send OTP (Expo/Firebase JS SDK)
+  const handleSendOtp = async () => {
+    setOtpError('');
     try {
-      await createUserWithEmailAndPassword(auth, signupEmail, signupPassword);
-            navigation.replace('Home');
-      // Success: navigation will auto-redirect based on auth state
+      const phoneProvider = new (await import('firebase/auth')).PhoneAuthProvider(auth);
+      const verificationId = await phoneProvider.verifyPhoneNumber(
+        '+91' + phone,
+        recaptchaVerifier.current
+      );
+      setVerificationId(verificationId);
+      setAuthStep('otp');
     } catch (e: any) {
-      setSignupError(getFriendlyAuthError(e));
-    } finally {
-      setSignupLoading(false);
+      setOtpError('Failed to send OTP. Try again.');
     }
   };
-  
+
+  // Verify OTP (Expo/Firebase JS SDK)
+  const handleVerifyOtp = async () => {
+    setOtpError('');
+    try {
+      const { PhoneAuthProvider, signInWithCredential } = await import('firebase/auth');
+      const credential = PhoneAuthProvider.credential(verificationId!, otp);
+      await signInWithCredential(auth, credential);
+      navigation.replace('Home');
+    } catch (e) {
+      setOtpError('Invalid OTP. Try again.');
+    }
+  };
 
   // Clear errors on step change
   React.useEffect(() => {
-    setLoginError('');
-    setSignupError('');
+    // setLoginError('');
+    // setSignupError('');
   }, [authStep]);
 
   return (
     <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: Colors.light.background, justifyContent: 'center', paddingHorizontal: 24 }}
+      style={{ flex: 1, backgroundColor: Colors.light.primary }}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      {/* Logo */}
-      <View style={{ alignItems: 'center', marginTop: 48, marginBottom: 32 }}>
-        <Text style={{ fontSize: 40, fontWeight: '900', color: Colors.light.primary, marginBottom: 8, fontFamily: 'Inter', letterSpacing: 1 }}>skooty</Text>
+      {/* Header with logo, illustration, and Help button */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28, paddingTop: 100, backgroundColor: Colors.light.primary }}>
+        {/* Logo */}
+        <Image
+          source={require('../../assets/images/skootyGo.png')}
+          style={{
+            width: 200, // Increased from 100
+            height: 200, // Increased from 150
+            resizeMode: 'contain',
+          }}
+        />
+        {/* Help button */}
+        {/* <TouchableOpacity style={{ backgroundColor: Colors.light.surface, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', shadowColor: Colors.light.primary, shadowOpacity: 0.08, shadowRadius: 4, elevation: 2 }}>
+          <Text style={{ fontSize: 18, color: Colors.light.primary, marginRight: 2, fontWeight: 'bold' }}>?</Text>
+          <Text style={{ fontSize: 16, color: Colors.light.primary, fontFamily: 'Poppins-Medium' }}>Help</Text>
+        </TouchableOpacity> */}
       </View>
-
-      {/* Auth Step Switcher */}
-      {authStep === 'welcome' && (
-        <View style={{ backgroundColor: Colors.light.card, borderRadius: 28, shadowColor: Colors.light.primary, shadowOpacity: 0.08, shadowRadius: 12, padding: 32, marginBottom: 32 }}>
-          <Text style={{ fontSize: 22, fontWeight: 'bold', color: Colors.light.secondary, marginBottom: 18, fontFamily: 'Inter' }}>What&apos;s your number?</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: Colors.light.surface, borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 8, backgroundColor: Colors.light.background }}>
-            <Text style={{ fontSize: 18, color: Colors.light.secondary, marginRight: 8, fontFamily: 'Inter' }}>+91</Text>
-          <TextInput
-              style={{ flex: 1, fontSize: 18, color: Colors.light.secondary, fontFamily: 'Inter' }}
-            placeholder="0000000000"
-            keyboardType="number-pad"
-            maxLength={10}
-            value={phone}
-            onChangeText={setPhone}
+      {/* Main content */}
+      <View style={{
+        flex: 1,
+        justifyContent: 'flex-start', // Move content to top
+        paddingTop: 30,               // Adjust as needed
+        paddingHorizontal: 28,
+        borderTopLeftRadius: 30,
+        borderTopRightRadius: 30,
+        backgroundColor: Colors.light.surface, // optional: to see the radius
+      }}>
+        {authStep === 'welcome' && (
+          <>
+            <Text style={{ fontSize: 22, fontWeight: 'bold', color: Colors.light.primary, marginBottom: 16, fontFamily: 'Poppins-Bold', letterSpacing: 0.5 }}>What's your number?</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: Colors.light.primary, borderRadius: 16, paddingHorizontal: 18, paddingVertical: 4, marginBottom: 14, backgroundColor: Colors.light.card, shadowColor: Colors.light.primary, shadowOpacity: 0.10, shadowRadius: 8, elevation: 3 }}>
+              <Text style={{ fontSize: 16, color: Colors.light.secondary, marginRight: 5, fontFamily: 'Poppins-Medium' }}>+91</Text>
+              <TextInput
+                style={{ flex: 1, fontSize: 16, color: Colors.light.secondary, fontFamily: 'Poppins-Medium', letterSpacing: 1 }}
+                placeholder="0000000000"
+                keyboardType="number-pad"
+                maxLength={10}
+                value={phone}
+                onChangeText={setPhone}
+                placeholderTextColor={Colors.light.secondary + '99'}
+              />
+            </View>
+            {/* CAPTCHA protected message */}
+            <View style={{ alignItems: 'center', marginTop: 8, marginBottom: 4 }}>
+              <Text style={{ fontSize: 12, color: Colors.light.secondary, fontFamily: 'Poppins-Medium' }}>
+                <Text style={{ fontWeight: 'bold', color: Colors.light.primary }}>CAPTCHA</Text> protected by Google
+              </Text>
+            </View>
+            {otpError ? <Text style={{ color: '#e53935', textAlign: 'center', marginTop: 8, fontFamily: 'Poppins-Medium', fontSize: 14 }}>{otpError}</Text> : null}
+          </>
+        )}
+        {authStep === 'otp' && (
+          <View style={{ flex: 1, justifyContent: 'flex-start', paddingHorizontal: 2, borderTopLeftRadius: 30, borderTopRightRadius: 30, backgroundColor: Colors.light.surface }}>
+            <Text style={{ fontSize: 22, fontWeight: 'bold', color: Colors.light.primary, marginBottom: 16, fontFamily: 'Poppins-Bold', letterSpacing: 0.5 }}>Enter OTP</Text>
+            <TextInput
+              style={{ fontSize: 18, color: Colors.light.secondary, fontFamily: 'Poppins-Medium', borderWidth: 1, borderColor: Colors.light.primary, borderRadius: 16, paddingHorizontal: 28, paddingVertical: 10, marginBottom: 14, backgroundColor: Colors.light.card, shadowColor: Colors.light.primary, shadowOpacity: 0.10, shadowRadius: 8, elevation: 3, letterSpacing: 8, textAlign: 'center' }}
+              placeholder="000-000"
+              value={otp}
+              onChangeText={setOtp}
+              keyboardType="number-pad"
+              maxLength={6}
               placeholderTextColor={Colors.light.secondary + '99'}
             />
-          </View>
-          <TouchableOpacity
-            style={{ backgroundColor: isValidPhone ? Colors.light.primary : Colors.light.surface, paddingVertical: 16, borderRadius: 16, marginTop: 18, alignItems: 'center' }}
-            disabled={!isValidPhone}
-            onPress={() => setAuthStep('login')}
-          >
-            <Text style={{ color: isValidPhone ? Colors.light.surface : Colors.light.secondary + '99', fontSize: 18, fontWeight: 'bold', fontFamily: 'Inter' }}>Next</Text>
-          </TouchableOpacity>
-          <Text style={{ fontSize: 12, color: Colors.light.secondary + '99', marginTop: 18, textAlign: 'center', fontFamily: 'Inter' }}>
-            By continuing, you agree to the <Text style={{ color: Colors.light.primary, textDecorationLine: 'underline' }}>T&C</Text> and <Text style={{ color: Colors.light.primary, textDecorationLine: 'underline' }}>Privacy Policy</Text>
-          </Text>
-          <TouchableOpacity onPress={() => setAuthStep('login')} style={{ marginTop: 18 }}>
-            <Text style={{ color: Colors.light.primary, textAlign: 'center', fontFamily: 'Inter', textDecorationLine: 'underline' }}>Login with Email</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {authStep === 'login' && (
-        <View style={{ backgroundColor: Colors.light.card, borderRadius: 28, shadowColor: Colors.light.primary, shadowOpacity: 0.08, shadowRadius: 12, padding: 32, marginBottom: 32 }}>
-          <Text style={{ fontSize: 22, fontWeight: 'bold', color: Colors.light.secondary, marginBottom: 18, fontFamily: 'Inter' }}>Login</Text>
-          <TextInput
-            style={{ fontSize: 18, color: Colors.light.secondary, fontFamily: 'Inter', borderWidth: 1, borderColor: Colors.light.surface, borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 12, backgroundColor: Colors.light.background }}
-            placeholder="Email"
-            value={loginEmail}
-            onChangeText={setLoginEmail}
-            autoCapitalize="none"
-            keyboardType="email-address"
-            placeholderTextColor={Colors.light.secondary + '99'}
-          />
-          <TextInput
-            style={{ fontSize: 18, color: Colors.light.secondary, fontFamily: 'Inter', borderWidth: 1, borderColor: Colors.light.surface, borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 12, backgroundColor: Colors.light.background }}
-            placeholder="Password"
-            value={loginPassword}
-            onChangeText={setLoginPassword}
-            secureTextEntry
-            placeholderTextColor={Colors.light.secondary + '99'}
-          />
-          {loginError ? (
-            <Text style={{ color: '#e53935', textAlign: 'center', marginBottom: 8, fontFamily: 'Inter', fontSize: 14 }}>{loginError}</Text>
-          ) : null}
-          <TouchableOpacity
-            style={{ backgroundColor: Colors.light.primary, paddingVertical: 16, borderRadius: 16, marginTop: 8, alignItems: 'center' }}
-            onPress={handleLogin}
-            disabled={loginLoading}
-          >
-            <Text style={{ color: Colors.light.surface, fontSize: 18, fontWeight: 'bold', fontFamily: 'Inter' }}>{loginLoading ? 'Logging in...' : 'Login'}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setAuthStep('signup')} style={{ marginTop: 18 }}>
-            <Text style={{ color: Colors.light.primary, textAlign: 'center', fontFamily: 'Inter', textDecorationLine: 'underline' }}>Don&apos;t have an account? Sign up</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setAuthStep('welcome')} style={{ marginTop: 8 }}>
-            <Text style={{ color: Colors.light.secondary + '99', textAlign: 'center', fontFamily: 'Inter', textDecorationLine: 'underline' }}>Back</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {authStep === 'signup' && (
-        <View style={{ backgroundColor: Colors.light.card, borderRadius: 28, shadowColor: Colors.light.primary, shadowOpacity: 0.08, shadowRadius: 12, padding: 32, marginBottom: 32 }}>
-          <Text style={{ fontSize: 22, fontWeight: 'bold', color: Colors.light.secondary, marginBottom: 18, fontFamily: 'Inter' }}>Sign Up</Text>
-          <TextInput
-            style={{ fontSize: 18, color: Colors.light.secondary, fontFamily: 'Inter', borderWidth: 1, borderColor: Colors.light.surface, borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 12, backgroundColor: Colors.light.background }}
-            placeholder="Email"
-            value={signupEmail}
-            onChangeText={setSignupEmail}
-            autoCapitalize="none"
-            keyboardType="email-address"
-            placeholderTextColor={Colors.light.secondary + '99'}
-          />
-          <TextInput
-            style={{ fontSize: 18, color: Colors.light.secondary, fontFamily: 'Inter', borderWidth: 1, borderColor: Colors.light.surface, borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 12, backgroundColor: Colors.light.background }}
-            placeholder="Password"
-            value={signupPassword}
-            onChangeText={setSignupPassword}
-            secureTextEntry
-            placeholderTextColor={Colors.light.secondary + '99'}
-          />
-          {signupError ? (
-            <Text style={{ color: '#e53935', textAlign: 'center', marginBottom: 8, fontFamily: 'Inter', fontSize: 14 }}>{signupError}</Text>
-          ) : null}
-        <TouchableOpacity
-            style={{ backgroundColor: Colors.light.primary, paddingVertical: 16, borderRadius: 16, marginTop: 8, alignItems: 'center' }}
-            onPress={handleSignup}
-            disabled={signupLoading}
-          >
-            <Text style={{ color: Colors.light.surface, fontSize: 18, fontWeight: 'bold', fontFamily: 'Inter' }}>{signupLoading ? 'Signing up...' : 'Sign Up'}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setAuthStep('login')} style={{ marginTop: 18 }}>
-            <Text style={{ color: Colors.light.primary, textAlign: 'center', fontFamily: 'Inter', textDecorationLine: 'underline' }}>Already have an account? Login</Text>
-        </TouchableOpacity>
-          <TouchableOpacity onPress={() => setAuthStep('welcome')} style={{ marginTop: 8 }}>
-            <Text style={{ color: Colors.light.secondary + '99', textAlign: 'center', fontFamily: 'Inter', textDecorationLine: 'underline' }}>Back</Text>
-            </TouchableOpacity>
+            {otpError ? (
+              <Text style={{ color: '#e53935', textAlign: 'center', marginBottom: 8, fontFamily: 'Poppins-Medium', fontSize: 14 }}>{otpError}</Text>
+            ) : null}
+            {/* Verify OTP button at the bottom */}
+            <View style={{ position: 'absolute', left: 0, right: 0, bottom: 20, paddingHorizontal: 4 }}>
+              <TouchableOpacity
+                style={{ backgroundColor: isValidOtp ? Colors.light.primary : Colors.light.card, paddingVertical: 12, borderRadius: 12, alignItems: 'center', shadowColor: Colors.light.primary, shadowOpacity: 0.12, shadowRadius: 8 }}
+                disabled={!isValidOtp}
+                onPress={handleVerifyOtp}
+              >
+                <Text style={{ color: isValidOtp ? Colors.light.surface : Colors.light.secondary + '99', fontSize: 18, fontWeight: 'bold', fontFamily: 'Poppins-Bold', letterSpacing: 0.5 }}>Verify OTP</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setAuthStep('welcome')} style={{ marginTop: 12, alignItems: 'center' }}>
+                <Text style={{ color: Colors.light.primary, textAlign: 'center', fontFamily: 'Poppins-Medium', textDecorationLine: 'underline', fontSize: 15 }}>Back</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
+      </View>
+      {/* Footer at the very bottom */}
+      {authStep === 'welcome' && (
+        <View style={{ position: 'absolute', left: 0, right: 0, bottom: 20, alignItems: 'center', paddingHorizontal: 24 }}>
+          <Text style={{ fontSize: 10, color: Colors.light.secondary, textAlign: 'center', fontFamily: 'Poppins-Medium' }}>
+            By continuing, you agree to the <Text style={{ color: Colors.light.primary, textDecorationLine: 'underline' }}>T&C</Text> and <Text style={{ color: Colors.light.primary, textDecorationLine: 'underline' }}>Privacy Policy</Text>
+          </Text>
+        </View>
+      )}
+      {/* Next button at the bottom */}
+      {authStep === 'welcome' && (
+        <View style={{ position: 'absolute', left: 0, right: 0, bottom: 60, paddingHorizontal: 24 }}>
+          <TouchableOpacity
+            style={{ backgroundColor: isValidPhone ? Colors.light.primary : Colors.light.card, paddingVertical: 12, borderRadius: 12, alignItems: 'center', shadowColor: Colors.light.primary, shadowOpacity: 0.12, shadowRadius: 8 }}
+            disabled={!isValidPhone}
+            onPress={handleSendOtp}
+          >
+            <Text style={{ color: isValidPhone ? Colors.light.surface : Colors.light.secondary + '99', fontSize: 18, fontWeight: 'bold', fontFamily: 'Poppins-Bold', letterSpacing: 0.5 }}>Next</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+      {/* Recaptcha Modal for Expo */}
+      <FirebaseRecaptchaVerifierModal
+        ref={recaptchaVerifier}
+        firebaseConfig={firebaseConfig}
+      />
     </KeyboardAvoidingView>
   );
 } 

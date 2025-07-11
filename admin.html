@@ -20,6 +20,26 @@
     .approve { background: #34c759; color: #fff; }
     .reject { background: #e53935; color: #fff; }
     .status { font-weight: bold; margin-bottom: 8px; }
+    .tab-bar {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+    .tab-btn {
+      background: #eee;
+      color: #582b11;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 24px;
+      font-weight: bold;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    .tab-btn.active {
+      background: #cc5803;
+      color: #fff;
+    }
   </style>
 </head>
 <body>
@@ -39,18 +59,59 @@ const firebaseConfig = {
     firebase.initializeApp(firebaseConfig);
     const db = firebase.firestore();
 
+    // Statuses to show in tabs
+    const STATUSES = [
+      { key: 'all', label: 'All' },
+      { key: 'pending', label: 'Pending' },
+      { key: 'verified', label: 'Approved' },
+      { key: 'rejected', label: 'Rejected' },
+      { key: 'blocked', label: 'Blocked' },
+    ];
+    let currentStatus = 'pending';
+    let unsubscribeDrivers = null;
+
+    function renderTabs() {
+      const tabBar = document.createElement('div');
+      tabBar.className = 'tab-bar';
+      tabBar.style.display = 'flex';
+      tabBar.style.justifyContent = 'center';
+      tabBar.style.gap = '16px';
+      tabBar.style.marginBottom = '32px';
+      STATUSES.forEach(tab => {
+        const btn = document.createElement('button');
+        btn.textContent = tab.label;
+        btn.className = 'tab-btn';
+        btn.style.background = currentStatus === tab.key ? '#cc5803' : '#eee';
+        btn.style.color = currentStatus === tab.key ? '#fff' : '#582b11';
+        btn.style.border = 'none';
+        btn.style.borderRadius = '8px';
+        btn.style.padding = '10px 24px';
+        btn.style.fontWeight = 'bold';
+        btn.style.fontSize = '16px';
+        btn.style.cursor = 'pointer';
+        btn.onclick = () => {
+          currentStatus = tab.key;
+          fetchDriversByStatus();
+        };
+        tabBar.appendChild(btn);
+      });
+      return tabBar;
+    }
+
     function renderDrivers(drivers) {
       const container = document.createElement('div');
       container.className = 'container';
       container.innerHTML = `
         <h1>Driver Document Verification</h1>
-        <div id="drivers"></div>
       `;
+      container.appendChild(renderTabs());
+      const driversDiv = document.createElement('div');
+      driversDiv.id = 'drivers';
+      container.appendChild(driversDiv);
       document.getElementById('main').innerHTML = '';
       document.getElementById('main').appendChild(container);
-      const driversDiv = document.getElementById('drivers');
       if (drivers.length === 0) {
-        driversDiv.innerHTML = '<p>No pending verifications.</p>';
+        driversDiv.innerHTML = '<p>No drivers found for this status.</p>';
         return;
       }
       drivers.forEach(driver => {
@@ -66,41 +127,59 @@ const firebaseConfig = {
             <div><div>RC</div>${docs.rcUrl ? `<img src="${docs.rcUrl}" alt="RC">` : 'N/A'}</div>
             <div><div>Aadhaar</div>${docs.aadhaarUrl ? `<img src="${docs.aadhaarUrl}" alt="Aadhaar">` : 'N/A'}</div>
           </div>
-          <div class="actions">
-            <button class="approve">Approve</button>
-            <button class="reject">Reject</button>
-          </div>
+          <div class="actions"></div>
         `;
-        // Approve
-        card.querySelector('.approve').onclick = async () => {
-          await db.collection('drivers').doc(driver.id).update({ verificationStatus: 'verified' });
-          card.querySelector('.status span').textContent = 'verified';
-          card.style.opacity = 0.5;
-        };
-        // Reject
-        card.querySelector('.reject').onclick = async () => {
-          await db.collection('drivers').doc(driver.id).update({ verificationStatus: 'rejected' });
-          card.querySelector('.status span').textContent = 'rejected';
-          card.style.opacity = 0.5;
-        };
+        const actionsDiv = card.querySelector('.actions');
+        // Actions based on status
+        if (driver.verificationStatus === 'pending') {
+          // Approve
+          const approveBtn = document.createElement('button');
+          approveBtn.className = 'approve';
+          approveBtn.textContent = 'Approve';
+          approveBtn.onclick = async () => {
+            await db.collection('drivers').doc(driver.id).update({ verificationStatus: 'verified' });
+            fetchDriversByStatus();
+          };
+          actionsDiv.appendChild(approveBtn);
+          // Reject
+          const rejectBtn = document.createElement('button');
+          rejectBtn.className = 'reject';
+          rejectBtn.textContent = 'Reject';
+          rejectBtn.onclick = async () => {
+            await db.collection('drivers').doc(driver.id).update({ verificationStatus: 'rejected' });
+            fetchDriversByStatus();
+          };
+          actionsDiv.appendChild(rejectBtn);
+        } else if (driver.verificationStatus === 'verified') {
+          // Block
+          const blockBtn = document.createElement('button');
+          blockBtn.className = 'reject';
+          blockBtn.textContent = 'Block';
+          blockBtn.onclick = async () => {
+            await db.collection('drivers').doc(driver.id).update({ verificationStatus: 'blocked' });
+            fetchDriversByStatus();
+          };
+          actionsDiv.appendChild(blockBtn);
+        }
         driversDiv.appendChild(card);
       });
     }
 
-    // Fetch all drivers with pending verification
-    let unsubscribeDrivers = null;
-    function fetchPendingDrivers() {
+    function fetchDriversByStatus() {
       if (unsubscribeDrivers) unsubscribeDrivers();
-      unsubscribeDrivers = db.collection('drivers').where('verificationStatus', '==', 'pending')
-        .onSnapshot(snapshot => {
-          const drivers = [];
-          snapshot.forEach(doc => {
-            drivers.push({ id: doc.id, ...doc.data() });
-          });
-          renderDrivers(drivers);
+      let query = db.collection('drivers');
+      if (currentStatus !== 'all') {
+        query = query.where('verificationStatus', '==', currentStatus);
+      }
+      unsubscribeDrivers = query.onSnapshot(snapshot => {
+        const drivers = [];
+        snapshot.forEach(doc => {
+          drivers.push({ id: doc.id, ...doc.data() });
         });
+        renderDrivers(drivers);
+      });
     }
-    fetchPendingDrivers();
+    fetchDriversByStatus();
   </script>
 </body>
 </html> 

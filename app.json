@@ -1,13 +1,13 @@
 {
   "expo": {
-    "name": "skooty-driver",
+    "name": "SkootyGO",
     "slug": "skooty-driver",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/skootyGo.png",
     "scheme": "skootydriver",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true
     },
@@ -16,7 +16,13 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.heylalit.skootydriver",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyBOnXwpJYocAiQfB-adA-Y7tYCorfLJlk0"
+        }
+      }
     },
     "web": {
       "bundler": "metro",
@@ -27,15 +33,21 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/skootyGo.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
-      ]
+      ],
+      "expo-maps"
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "d7f227d1-e8c2-420a-aaa7-f310fa499da9"
+      }
     }
   }
 }

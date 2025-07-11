@@ -1,16 +1,16 @@
 import { useNavigation } from '@react-navigation/native';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, BackHandler, SafeAreaView, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, BackHandler, Linking, SafeAreaView, Text, TouchableOpacity, View } from 'react-native';
 // @ts-ignore
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 // @ts-ignore
 import * as Location from 'expo-location';
-import { serverTimestamp } from 'firebase/firestore';
+import { onSnapshot, serverTimestamp } from 'firebase/firestore';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import { updateCommission } from '../../commissionUtils';
 import { Colors } from '../../constants/Colors';
-import { db } from '../../firebaseConfig';
-import { onSnapshot } from 'firebase/firestore';
+import { db, getFirebaseAuth } from '../../firebaseConfig';
 const STATUS_FLOW = [
   'Driver on the way',
   'Ride in progress',
@@ -348,6 +348,11 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
         animateBottomSection(true);
       }, 100000);
 
+      if (ride && ride.fare) {
+        const auth = getFirebaseAuth();
+        await updateCommission(auth.currentUser?.uid, ride.fare);
+      }
+
     } catch (e) {
       Alert.alert('Error', 'Could not complete ride.');
     } finally {
@@ -456,7 +461,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
           fontSize: 13,
           fontWeight: '600',
           color: Colors.light.secondary,
-          fontFamily: 'Inter',
+          fontFamily: 'Poppins-Medium',
           marginBottom: 2,
         }}>
           {title}
@@ -464,7 +469,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
         <Text style={{
           fontSize: 14,
           color: Colors.light.secondary,
-          fontFamily: 'Inter',
+          fontFamily: 'Poppins-Medium',
           lineHeight: 18,
         }}>
           {value}
@@ -507,7 +512,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
             fontWeight: '700',
             color: Colors.light.secondary,
             marginBottom: 12,
-            fontFamily: 'Inter',
+            fontFamily: 'Poppins-Medium',
             textAlign: 'center'
           }}>
             Ride Cancelled
@@ -516,7 +521,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
             fontSize: 16,
             color: Colors.light.secondary + 'CC',
             marginBottom: 30,
-            fontFamily: 'Inter',
+            fontFamily: 'Poppins-Medium',
             textAlign: 'center',
             lineHeight: 22
           }}>
@@ -548,7 +553,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
               color: Colors.light.surface,
               fontSize: 16,
               fontWeight: '700',
-              fontFamily: 'Inter',
+              fontFamily: 'Poppins-Medium',
               letterSpacing: 0.2
             }}>
               Back to Home
@@ -590,7 +595,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
           />
         </TouchableOpacity>
         <View style={{ flex: 1, marginLeft: 12 }}>
-          <Text style={{ fontSize: 18, fontWeight: 'bold', color: Colors.light.secondary, fontFamily: 'Inter' }}>
+          <Text style={{ fontSize: 18, fontWeight: 'bold', color: Colors.light.secondary, fontFamily: 'Poppins-Medium' }}>
             Ride #{ride.id.slice(-6)}
           </Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 1 }}>
@@ -599,16 +604,16 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
               size={16}
               color={getStatusColor(ride.status)}
             />
-            <Text style={{ fontSize: 14, color: getStatusColor(ride.status), marginLeft: 6, fontWeight: '600', fontFamily: 'Inter' }}>
+            <Text style={{ fontSize: 14, color: getStatusColor(ride.status), marginLeft: 6, fontWeight: '600', fontFamily: 'Poppins-Medium' }}>
               {ride.status}
             </Text>
           </View>
         </View>
         <View style={{ alignItems: 'flex-end' }}>
-          <Text style={{ fontSize: 20, fontWeight: 'bold', color: Colors.light.primary, fontFamily: 'Inter' }}>
+          <Text style={{ fontSize: 20, fontWeight: 'bold', color: Colors.light.primary, fontFamily: 'Poppins-Medium' }}>
             ₹{ride.fare}
           </Text>
-          <Text style={{ fontSize: 12, color: Colors.light.secondary, fontFamily: 'Inter' }}>
+          <Text style={{ fontSize: 12, color: Colors.light.secondary, fontFamily: 'Poppins-Medium' }}>
             Total Fare
           </Text>
         </View>
@@ -682,10 +687,10 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
         ) : (
           <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 14 }}>
             <MaterialCommunityIcons name="map" size={48} color={Colors.light.primary} />
-            <Text style={{ fontSize: 16, fontWeight: 'bold', color: Colors.light.secondary, marginTop: 12, textAlign: 'center', fontFamily: 'Inter' }}>
+            <Text style={{ fontSize: 16, fontWeight: 'bold', color: Colors.light.secondary, marginTop: 12, textAlign: 'center', fontFamily: 'Poppins-Medium' }}>
               Location Information
             </Text>
-            <Text style={{ fontSize: 14, color: Colors.light.secondary, marginTop: 8, textAlign: 'center', fontFamily: 'Inter' }}>
+            <Text style={{ fontSize: 14, color: Colors.light.secondary, marginTop: 8, textAlign: 'center', fontFamily: 'Poppins-Medium' }}>
               {MapView ? 'Loading map...' : 'Map view not available'}
             </Text>
 
@@ -696,11 +701,11 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                 <View style={{ marginBottom: 12, padding: 12, backgroundColor: Colors.light.card, borderRadius: 12 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
                     <MaterialCommunityIcons name="car" size={16} color={Colors.light.primary} />
-                    <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.light.secondary, marginLeft: 8, fontFamily: 'Inter' }}>
+                    <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.light.secondary, marginLeft: 8, fontFamily: 'Poppins-Medium' }}>
                       Your Location
                     </Text>
                   </View>
-                  <Text style={{ fontSize: 13, color: Colors.light.secondary, marginLeft: 24, fontFamily: 'Inter' }}>
+                  <Text style={{ fontSize: 13, color: Colors.light.secondary, marginLeft: 24, fontFamily: 'Poppins-Medium' }}>
                     {driverLocation.latitude.toFixed(5)}, {driverLocation.longitude.toFixed(5)}
                   </Text>
                 </View>
@@ -711,11 +716,11 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                 <View style={{ marginBottom: 12, padding: 12, backgroundColor: Colors.light.card, borderRadius: 12 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
                     <MaterialCommunityIcons name="map-marker" size={16} color={Colors.light.primary} />
-                    <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.light.secondary, marginLeft: 8, fontFamily: 'Inter' }}>
+                    <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.light.secondary, marginLeft: 8, fontFamily: 'Poppins-Medium' }}>
                       Pickup Location
                     </Text>
                   </View>
-                  <Text style={{ fontSize: 13, color: Colors.light.secondary, marginLeft: 24, fontFamily: 'Inter' }}>
+                  <Text style={{ fontSize: 13, color: Colors.light.secondary, marginLeft: 24, fontFamily: 'Poppins-Medium' }}>
                     {pickupAddress || `${ride.pickup.latitude.toFixed(5)}, ${ride.pickup.longitude.toFixed(5)}`}
                   </Text>
                 </View>
@@ -726,11 +731,11 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                 <View style={{ padding: 12, backgroundColor: Colors.light.card, borderRadius: 12 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
                     <MaterialCommunityIcons name="flag-checkered" size={16} color="#34C759" />
-                    <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.light.secondary, marginLeft: 8, fontFamily: 'Inter' }}>
+                    <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.light.secondary, marginLeft: 8, fontFamily: 'Poppins-Medium' }}>
                       Destination
                     </Text>
                   </View>
-                  <Text style={{ fontSize: 13, color: Colors.light.secondary, marginLeft: 24, fontFamily: 'Inter' }}>
+                  <Text style={{ fontSize: 13, color: Colors.light.secondary, marginLeft: 24, fontFamily: 'Poppins-Medium' }}>
                     {dropoffAddress || `${ride.dropoff.latitude.toFixed(5)}, ${ride.dropoff.longitude.toFixed(5)}`}
                   </Text>
                 </View>
@@ -773,7 +778,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                 fontSize: 18,
                 fontWeight: '700',
                 color: Colors.light.secondary,
-                fontFamily: 'Inter',
+                fontFamily: 'Poppins-Medium',
                 letterSpacing: -0.5
               }}>
                 Ride Details
@@ -785,7 +790,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
               <View style={{
                 backgroundColor: statusIndex === 0 ? Colors.light.primary + '18' : '#FF9500' + '18',
                 borderRadius: 8,
-                padding: 8,
+                padding: 5,
                 marginBottom: 20,
                 borderLeftWidth: 4,
                 borderLeftColor: statusIndex === 0 ? Colors.light.primary : '#FF9500',
@@ -794,15 +799,16 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
               }}>
                 <MaterialCommunityIcons
                   name={statusIndex === 0 ? 'car' : 'map-marker-path'}
-                  size={16}
+                  size={12}
                   color={statusIndex === 0 ? Colors.light.primary : '#FF9500'}
                 />
                 <Text style={{
-                  fontSize: 13,
+                  fontSize: 10,
                   fontWeight: '600',
                   color: statusIndex === 0 ? Colors.light.primary : '#FF9500',
-                  marginLeft: 8,
-                  fontFamily: 'Inter',
+                  marginLeft: 4,
+                  marginTop: 2.5,
+                  fontFamily: 'Poppins-Medium',
                   letterSpacing: 0.1
                 }}>
                   {statusIndex === 0 ? 'Route to Pickup' : 'Route to Destination'}
@@ -821,46 +827,71 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
               shadowRadius: 12,
               shadowOffset: { width: 0, height: 4 },
             }}>
-              {/* Header with customer info */}
               {ride.customerName && (
-                <View style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  paddingBottom: 16,
-                  borderBottomWidth: 1,
-                  borderBottomColor: Colors.light.background + '30',
-                }}>
-                  <View style={{
-                    backgroundColor: Colors.light.primary + '15',
-                    borderRadius: 24,
-                    padding: 8,
-                    marginRight: 12,
-                  }}>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    paddingBottom: 16,
+                    borderBottomWidth: 1,
+                    borderBottomColor: Colors.light.background + '30',
+                  }}
+                >
+                  <View
+                    style={{
+                      backgroundColor: Colors.light.primary + '15',
+                      borderRadius: 24,
+                      padding: 6,
+                      marginRight: 12,
+                    }}
+                  >
                     <MaterialCommunityIcons name="account" size={20} color={Colors.light.primary} />
                   </View>
+
+                  {/* Name and Label */}
                   <View style={{ flex: 1 }}>
-                    <Text style={{
-                      fontSize: 16,
-                      fontWeight: '700',
-                      color: Colors.light.text,
-                      fontFamily: 'Inter',
-                    }}>
+                    <Text
+                      style={{
+                        fontSize: 14,
+                        fontWeight: '900',
+                        color: Colors.light.text,
+                        fontFamily: 'Poppins-Medium',
+                      }}
+                    >
                       {ride.customerName}
                     </Text>
-                    <Text style={{
-                      fontSize: 12,
-                      color: Colors.light.secondary,
-                      fontFamily: 'Inter',
-                      marginTop: 2,
-                    }}>
+                    <Text
+                      style={{
+                        fontSize: 10,
+                        color: Colors.light.secondary,
+                        fontFamily: 'Poppins-Medium',
+                        marginTop: 2,
+                      }}
+                    >
                       Customer
                     </Text>
                   </View>
+
+                  {/* Phone Icon on the far right */}
+                  {ride.customerPhone && (
+                    <TouchableOpacity
+                      onPress={() => Linking.openURL(`tel:${ride.customerPhone}`)}
+                      style={{
+                        backgroundColor: Colors.light.primary,
+                        padding: 8,
+                        borderRadius: 50,
+                        marginLeft: 8,
+                      }}
+                    >
+                      <MaterialCommunityIcons name="phone" size={18} color={Colors.light.card} />
+                    </TouchableOpacity>
+                  )}
                 </View>
               )}
 
+
               {/* Trip Route */}
-              <View style={{ gap: 12 }}>
+              <View style={{ gap: 8 }}>
                 {/* Pickup Location */}
                 <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
                   <View style={{
@@ -887,17 +918,17 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                       fontSize: 12,
                       fontWeight: '600',
                       color: Colors.light.secondary,
-                      fontFamily: 'Inter',
+                      fontFamily: 'Poppins-Medium',
                       textTransform: 'uppercase',
                       letterSpacing: 0.5,
-                      marginBottom: 4,
+                      marginBottom: 2,
                     }}>
                       PICKUP
                     </Text>
                     <Text style={{
-                      fontSize: 15,
+                      fontSize: 14,
                       color: Colors.light.text,
-                      fontFamily: 'Inter',
+                      fontFamily: 'Poppins-Medium',
                       lineHeight: 20,
                       fontWeight: '500',
                     }}>
@@ -926,17 +957,17 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                       fontSize: 12,
                       fontWeight: '600',
                       color: Colors.light.secondary,
-                      fontFamily: 'Inter',
+                      fontFamily: 'Poppins-Medium',
                       textTransform: 'uppercase',
                       letterSpacing: 0.5,
-                      marginBottom: 4,
+                      marginBottom: 2,
                     }}>
                       DESTINATION
                     </Text>
                     <Text style={{
-                      fontSize: 15,
+                      fontSize: 14,
                       color: Colors.light.text,
-                      fontFamily: 'Inter',
+                      fontFamily: 'Poppins-Medium',
                       lineHeight: 20,
                       fontWeight: '500',
                     }}>
@@ -972,7 +1003,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                 fontWeight: '700',
                 color: Colors.light.secondary,
                 marginBottom: 6,
-                fontFamily: 'Inter',
+                fontFamily: 'Poppins-Medium',
                 textAlign: 'center'
               }}>
                 Ride Completed!
@@ -981,7 +1012,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                 fontSize: 14,
                 color: Colors.light.secondary + 'CC',
                 textAlign: 'center',
-                fontFamily: 'Inter',
+                fontFamily: 'Poppins-Medium',
                 lineHeight: 20
               }}>
                 Now collect payment from customer
@@ -1003,7 +1034,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                   fontSize: 13,
                   color: Colors.light.secondary,
                   marginBottom: 6,
-                  fontFamily: 'Inter',
+                  fontFamily: 'Poppins-Medium',
                   fontWeight: '500'
                 }}>
                   Total Fare
@@ -1012,7 +1043,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                   fontSize: 24,
                   fontWeight: '700',
                   color: Colors.light.primary,
-                  fontFamily: 'Inter'
+                  fontFamily: 'Poppins-Medium'
                 }}>
                   ₹{ride.fare}
                 </Text>
@@ -1026,7 +1057,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                 fontWeight: '600',
                 color: Colors.light.secondary,
                 marginBottom: 16,
-                fontFamily: 'Inter'
+                fontFamily: 'Poppins-Medium'
               }}>
                 Select Payment Method
               </Text>
@@ -1057,7 +1088,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                     fontWeight: '600',
                     color: paymentMethod === 'cash' ? Colors.light.primary : Colors.light.secondary,
                     marginTop: 8,
-                    fontFamily: 'Inter'
+                    fontFamily: 'Poppins-Medium'
                   }}>
                     Cash
                   </Text>
@@ -1088,7 +1119,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                     fontWeight: '600',
                     color: paymentMethod === 'online' ? Colors.light.primary : Colors.light.secondary,
                     marginTop: 8,
-                    fontFamily: 'Inter'
+                    fontFamily: 'Poppins-Medium'
                   }}>
                     Online
                   </Text>
@@ -1123,7 +1154,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                 color: Colors.light.surface,
                 fontSize: 16,
                 fontWeight: '700',
-                fontFamily: 'Inter',
+                fontFamily: 'Poppins-Medium',
                 letterSpacing: 0.2
               }}>
                 {updating ? 'Completing...' : 'Complete & Collect Payment'}
@@ -1162,7 +1193,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                 fontSize: 16,
                 fontWeight: '700',
                 color: Colors.light.surface,
-                fontFamily: 'Inter',
+                fontFamily: 'Poppins-Medium',
                 letterSpacing: 0.2
               }}>
                 {updating ? 'Updating...' :
@@ -1200,7 +1231,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                 fontSize: 15,
                 fontWeight: '600',
                 color: Colors.light.surface,
-                fontFamily: 'Inter',
+                fontFamily: 'Poppins-Medium',
                 letterSpacing: 0.2
               }}>
                 Cancel Ride
@@ -1235,7 +1266,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
               fontWeight: '700',
               color: Colors.light.surface,
               marginBottom: 8,
-              fontFamily: 'Inter',
+              fontFamily: 'Poppins-Medium',
               textAlign: 'center'
             }}>
               Ride Successfully Completed!
@@ -1244,7 +1275,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
               fontSize: 14,
               color: Colors.light.surface + 'CC',
               marginBottom: 20,
-              fontFamily: 'Inter',
+              fontFamily: 'Poppins-Medium',
               textAlign: 'center',
               lineHeight: 20
             }}>
@@ -1276,7 +1307,7 @@ export default function DriverRideStatusScreen({ route }: { route: { params: { r
                 color: '#34C759',
                 fontSize: 16,
                 fontWeight: '700',
-                fontFamily: 'Inter',
+                fontFamily: 'Poppins-Medium',
                 letterSpacing: 0.2
               }}>
                 Back to Home

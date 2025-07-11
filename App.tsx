@@ -1,17 +1,22 @@
+import { Ionicons } from '@expo/vector-icons';
 import { createDrawerNavigator, DrawerContentComponentProps, DrawerContentScrollView, DrawerItem, DrawerItemList, DrawerNavigationProp } from '@react-navigation/drawer';
 import { NavigationContainer, useNavigation } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { useFonts } from 'expo-font';
+import { onAuthStateChanged, signOut, User } from 'firebase/auth';
+import { doc, DocumentSnapshot, onSnapshot } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Image, Text, TouchableOpacity, View } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import CommissionSummaryScreen from './app/driver/CommissionSummaryScreen';
 import DriverHomeScreen from './app/driver/DriverHomeScreen';
+import DriverProfileScreen from './app/driver/DriverProfileScreen';
 import DriverRideStatusScreen from './app/driver/DriverRideStatusScreen';
 import DriverVerificationScreen from './app/driver/DriverVerificationScreen';
+import PlatformFeeTransactionsScreen from './app/driver/PlatformFeeTransactionsScreen';
 import WelcomeScreen from './app/driver/WelcomeScreen';
 import { Colors } from './constants/Colors';
-import { auth, db } from './firebaseConfig';
+import { db, getFirebaseAuth } from './firebaseConfig';
 
 const Stack = createStackNavigator();
 const Drawer = createDrawerNavigator();
@@ -27,10 +32,10 @@ function CustomDrawerContent(props: DrawerContentComponentProps & { profile?: { 
             <Image source={{ uri: profile.profilePhotoUrl }} style={{ width: 48, height: 48, borderRadius: 24, marginBottom: 4, borderWidth: 2, borderColor: Colors.light.primary }} />
           ) : (
             <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: Colors.light.background, alignItems: 'center', justifyContent: 'center', marginBottom: 4 }}>
-              <Image source={require('./assets/images/icon.png')} style={{ width: 32, height: 32, borderRadius: 16, opacity: 0.3 }} />
+              <Image source={require('./assets/images/skootyGo.png')} style={{ width: 32, height: 32, borderRadius: 16, opacity: 0.3 }} />
             </View>
           )}
-          <Text style={{ fontWeight: '700', color: Colors.light.secondary, fontSize: 18, fontFamily: 'Inter', marginBottom: 2 }}>{profile.name || 'Driver'}</Text>
+          <Text style={{ fontWeight: '700', color: Colors.light.secondary, fontSize: 18, fontFamily: 'Poppins-Medium', marginBottom: 2 }}>{profile.name || 'Driver'}</Text>
         </View>
         <View style={{ marginHorizontal: 8, marginBottom: 8 }}>
           <DrawerItemList {...props} />
@@ -39,9 +44,10 @@ function CustomDrawerContent(props: DrawerContentComponentProps & { profile?: { 
         <View style={{ marginHorizontal: 8, marginTop: 12, marginBottom: 62, }}>
           <DrawerItem
             label="Logout"
-            labelStyle={{ color: Colors.dark.secondary, fontWeight: 'bold', fontFamily: 'Inter', fontSize: 16 }}
+            labelStyle={{ color: Colors.light.card, fontWeight: 'bold', fontFamily: 'Poppins-Medium', fontSize: 16 }}
             style={{ borderRadius: 12, backgroundColor: Colors.dark.primary, marginTop: 8 }}
             onPress={async () => {
+              const auth = getFirebaseAuth();
               await signOut(auth);
             }}
           />
@@ -82,7 +88,7 @@ function ProfileHeaderRight({ profile }: { profile?: { profilePhotoUrl?: string;
           fontWeight: '600',
           fontSize: 17,
           marginRight: 10,
-          fontFamily: 'Inter',
+          fontFamily: 'Poppins-Medium',
           letterSpacing: 0.2,
         }}
         numberOfLines={1}
@@ -91,7 +97,7 @@ function ProfileHeaderRight({ profile }: { profile?: { profilePhotoUrl?: string;
         {profile?.name ? `Hi, ${profile.name}` : ''}
       </Text>
       {profile?.profilePhotoUrl ? (
-        <TouchableOpacity onPress={() => {/* TODO: handle profile press */}}>
+        <TouchableOpacity onPress={() => {/* TODO: handle profile press */ }}>
           <Image
             source={{ uri: profile.profilePhotoUrl }}
             style={{
@@ -126,15 +132,20 @@ function DriverDrawer() {
         return;
       }
       const docRef = doc(db, 'drivers', user.uid);
-      unsubscribeProfile = onSnapshot(docRef, (docSnap) => {
+      unsubscribeProfile = onSnapshot(docRef, (docSnap: DocumentSnapshot) => {
         if (docSnap.exists()) {
           const data = docSnap.data();
-          setProfile({ name: data.name, profilePhotoUrl: data.profilePhotoUrl });
+          if (data) {
+            setProfile({ name: data.name, profilePhotoUrl: data.profilePhotoUrl });
+          } else {
+            setProfile(null);
+          }
         } else {
           setProfile(null);
         }
       });
     }
+    const auth = getFirebaseAuth();
     unsubscribeAuth = onAuthStateChanged(auth, fetchProfile);
     return () => {
       if (unsubscribeAuth) unsubscribeAuth();
@@ -148,35 +159,92 @@ function DriverDrawer() {
       drawerContent={props => <CustomDrawerContent {...props} profile={profile || undefined} />}
       screenOptions={{
         headerShown: true,
-        headerStyle: { backgroundColor: Colors.light.surface, elevation: 0, shadowOpacity: 0 },
+        headerStyle: { backgroundColor: Colors.light.surface, borderBottomWidth: 0, elevation: 0.1, borderBottomEndRadius: 20, borderBottomStartRadius: 20 },
         headerTitle: () => null, // Remove the title
         headerTintColor: Colors.light.primary,
         drawerActiveTintColor: Colors.light.primary,
         drawerInactiveTintColor: Colors.light.secondary + '99',
         drawerStyle: { backgroundColor: Colors.light.surface, borderTopRightRadius: 24, borderBottomRightRadius: 24 },
-        drawerLabelStyle: { fontWeight: 'bold', fontSize: 16, fontFamily: 'Inter' },
+        drawerLabelStyle: { fontWeight: 'bold', fontSize: 16, fontFamily: 'Poppins-Medium' },
         headerLeft: ({ tintColor }) => <DrawerMenuHeader tintColor={tintColor} />, // Only menu icon
         headerRight: () => <ProfileHeaderRight profile={profile || undefined} />,   // Profile image and username on right
       }}
     >
-      <Drawer.Screen name="DriverHome" component={DriverHomeScreen} options={{ title: 'Home' }} />
-      <Drawer.Screen name="Profile" component={DriverHomeScreen} options={{ title: 'Profile' }} initialParams={{ showProfile: true }} />
-      <Drawer.Screen name="DriverVerification" component={DriverVerificationScreen} options={{ title: 'Account Verification' }} />
+      <Drawer.Screen
+        name="DriverHome"
+        component={DriverHomeScreen}
+        options={{
+          title: 'Home',
+          drawerIcon: ({ color, size }) => (
+            <Ionicons name="home-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Drawer.Screen
+        name="DriverProfileScreen"
+        component={DriverProfileScreen}
+        options={{
+          title: 'Profile',
+          drawerIcon: ({ color, size }) => (
+            <Ionicons name="person-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Drawer.Screen
+        name="DriverVerification"
+        component={DriverVerificationScreen}
+        options={{
+          title: 'Account Status',
+          drawerIcon: ({ color, size }) => (
+            <Ionicons name="shield-checkmark-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Drawer.Screen
+        name="CommissionSummary"
+        component={CommissionSummaryScreen}
+        options={{
+          title: 'Earnings & Fees',
+          drawerIcon: ({ color, size }) => (
+            <Ionicons name="cash-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Drawer.Screen
+        name="PlatformFeeTransactions"
+        component={PlatformFeeTransactionsScreen}
+        options={{
+          title: 'Platform Fee History',
+          drawerIcon: ({ color, size }) => (
+            <Ionicons name="receipt-outline" size={size} color={color} />
+          ),
+        }}
+      />
     </Drawer.Navigator>
   );
 }
 
 export default function App() {
+  const [fontsLoaded] = useFonts({
+    'Poppins-Medium': require('./assets/fonts/Poppins-Medium.ttf'),
+    'Poppins-SemiBold': require('./assets/fonts/Poppins-SemiBold.ttf'),
+    'Poppins-Bold': require('./assets/fonts/Poppins-Bold.ttf'),
+  });
+
   const [isAuthenticated, setIsAuthenticated] = useState<null | boolean>(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const auth = getFirebaseAuth();
+    console.debug('[App] useEffect: Setting up onAuthStateChanged');
+    const unsubscribe = onAuthStateChanged(auth, (user: User | null) => {
+      console.debug('[App] onAuthStateChanged:', user ? `User UID: ${user.uid}` : 'No user');
       setIsAuthenticated(!!user);
     });
     return unsubscribe;
   }, []);
 
-  if (isAuthenticated === null) {
+  if (!fontsLoaded || isAuthenticated === null) {
+    console.debug('[App] Waiting for fonts or auth state...');
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.light.background }}>
         <ActivityIndicator size="large" color={Colors.light.primary} />
@@ -184,6 +252,7 @@ export default function App() {
     );
   }
 
+  console.debug('[App] Rendering NavigationContainer. isAuthenticated:', isAuthenticated);
   return (
     <NavigationContainer>
       <Stack.Navigator initialRouteName={isAuthenticated ? 'DriverDrawer' : 'Welcome'} screenOptions={{ headerShown: false }}>
@@ -194,6 +263,7 @@ export default function App() {
           <Stack.Screen name="DriverDrawer" component={DriverDrawer} />
         )}
         <Stack.Screen name="DriverRideStatus" component={DriverRideStatusScreen as any} />
+        <Stack.Screen name="DriverProfileScreen" component={DriverProfileScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );
